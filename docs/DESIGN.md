@@ -22,7 +22,7 @@ answers is "have I had this wine, and did I like it?"
 | Interface | One MCP server, no separate REST API | The claw is the only client. A REST API can be added later on top of the same service layer. |
 | MCP transport | Streamable HTTP, stateless, JSON responses | Works on Lambda with no sticky sessions. |
 | Hosting | API Gateway HTTP API in front of one Python Lambda (arm64) | Cheapest managed HTTPS front door with custom domains and throttling. |
-| Auth | Bearer token checked in the Lambda, token stored as an SSM SecureString | One client, no sign-in flow needed. Constant-time compare; token rotated by updating the parameter. |
+| Auth | Bearer token checked in the Lambda, token generated and stored in Secrets Manager | One client, no sign-in flow needed. CloudFormation can generate the secret (it can't create SSM SecureStrings). Constant-time compare. About $0.40 a month per environment. |
 | AgentCore Gateway | Not used for now | Needs an OAuth provider (Cognito) for inbound auth and adds cost for a single client. Can front the server later without code changes. |
 | Users | Every record is keyed by Telegram user ID | Start with Andrew only; other people the bot admits work without changes. |
 | Storage | DynamoDB on-demand, S3 for photos, S3 Vectors for embeddings | All pay-per-use and serverless. |
@@ -40,7 +40,7 @@ Telegram ──▶ OpenClaw agent ──HTTPS + bearer──▶ API Gateway (HTT
                                           Lambda: MCP server (Python)
                                  ┌──────────┬─────────┼──────────┬───────────┐
                                  ▼          ▼         ▼          ▼           ▼
-                            DynamoDB   S3 photos  S3 Vectors  Bedrock     SSM token
+                            DynamoDB   S3 photos  S3 Vectors  Bedrock     Secrets Mgr
                            (wines)                (index)    (Claude,
                                                              embeddings)
 ```
@@ -99,7 +99,7 @@ version is usually under that while still readable for label text. The tool
 rejects oversized images with a message telling the agent to send a smaller
 size. If that proves unreliable, `check_wine_photo` can also accept a Telegram
 `file_id` and fetch the photo from the Bot API itself (needs the bot token in
-SSM).
+Secrets Manager).
 
 ## Photo lookup flow
 
@@ -133,18 +133,26 @@ second. Provisioned concurrency isn't worth its cost at this volume.
 ## Repository layout
 
 ```
-infra/            CDK app (stacks for dev and prod)
-src/wine_cellar/  service code: MCP server, tools, storage, search
-tests/            unit tests (moto for AWS, stubbed Bedrock)
-docs/             this document
-.github/workflows CI: lint, typecheck, test, cdk synth; deploy dev on main, prod on manual approval
+src/wine_cellar/    service: MCP tools, storage, search, Lambda entry point
+infra/              CDK app: service stack (dev and prod) and GitHub OIDC stack
+tests/unit/         pytest unit tests (moto for AWS, CDK template assertions)
+scripts/            Lambda packaging
+.github/workflows/  CI checks and deploys
+docs/               this document and the deploy guide
 ```
 
 ## CI/CD
 
-GitHub Actions assumes an AWS role through OIDC, so no long-lived keys. Pull
-requests run ruff, ty, pytest and `cdk synth`. Merges to `main` deploy dev;
-prod deploys from a manually approved workflow.
+`CI` runs ruff, ty and the unit tests on every pull request and push. `Deploy`
+reruns those checks, then deploys dev on every merge to `main`, so code and
+infrastructure are proven together in small steps. It can also be run by hand
+to put any branch on dev, or to deploy `main` to prod. GitHub Actions assumes
+an AWS role through OIDC, so there are no long-lived keys. Setup is in
+[DEPLOY.md](DEPLOY.md).
+
+Tests are unit tests only for now. The Lambda handler tests drive the real
+handler with API Gateway events against moto, which covers the HTTP, auth and
+MCP layers without deploying.
 
 ## Build steps
 
@@ -160,7 +168,7 @@ the token in the `Authorization` header. The raw token stays in OpenShell's
 provider store; the agent config holds only a placeholder:
 
 ```
-export WINE_MCP_TOKEN=...   # from SSM, never committed
+export WINE_MCP_TOKEN=...   # from Secrets Manager, never committed
 nemoclaw <sandbox> mcp add wine --url https://mcp.wine.redswimmer.com/mcp --env WINE_MCP_TOKEN
 unset WINE_MCP_TOKEN
 ```

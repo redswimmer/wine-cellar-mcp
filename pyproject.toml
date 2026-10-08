@@ -1,13 +1,53 @@
 [project]
 name = "wine-cellar-service"
 version = "0.1.0"
-description = "Add your description here"
+description = "Wine preference MCP server for agents, on AWS serverless"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "boto3>=1.43.109",
+    "mangum>=0.22.0",
+    "mcp>=2.3.0",
+    "python-ulid>=4.0.1",
+    "rapidfuzz>=3.14.6",
+]
 
 [dependency-groups]
 dev = [
+    "aws-cdk-lib==2.272.0",
+    "constructs>=10.8.1",
+    "moto>=5.2.3",
+    "pytest>=9.1.1",
     "ruff>=0.16.10",
     "ty>=0.0.85",
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wine_cellar"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+pythonpath = ["src", "."]
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["cdk.out", "build"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ty.src]
+include = ["src", "infra", "tests"]
+
+# The jsii-generated CDK bindings name protocol parameters differently from their implementations
+# (e.g. IFunction.grant_invoke(identity) vs Function.grant_invoke(grantee)), which ty reports as
+# protocol mismatches. Those are false positives in the bindings, not in our code.
+[[tool.ty.overrides]]
+include = ["infra/**"]
+
+[tool.ty.overrides.rules]
+invalid-argument-type = "ignore"

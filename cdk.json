@@ -1,0 +1,9 @@
+{
+  "app": "uv run --frozen python -m infra.app",
+  "watch": {
+    "include": ["infra/**", "src/**"]
+  },
+  "context": {
+    "zoneName": "redswimmer.com"
+  }
+}

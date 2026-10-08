@@ -1,1 +1,28 @@
 # wine-cellar-service
+
+An MCP server that lets an AI agent remember which wines you like. Built for a
+NemoClaw (OpenClaw) agent that you talk to in Telegram, running on AWS
+serverless (API Gateway, Lambda, DynamoDB).
+
+- Design: [docs/DESIGN.md](docs/DESIGN.md)
+- Deploying: [docs/DEPLOY.md](docs/DEPLOY.md)
+
+## Develop
+
+```
+uv sync
+uv run ruff check . && uv run ruff format --check .
+uv run ty check
+uv run pytest
+```
+
+## Tools
+
+| Tool | What it does |
+| --- | --- |
+| `save_wine` | Record a wine and your opinion; updates it if already saved |
+| `add_tasting` | Add a dated tasting note |
+| `search_wines` | Fuzzy text search over your wines |
+| `list_wines` | List with filters (verdict, style, region, varietal) |
+| `get_wine` | One wine with its tasting history |
+| `delete_wine` | Remove a wine |
