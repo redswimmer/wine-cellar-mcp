@@ -1,8 +1,9 @@
-"""Embeddings (Bedrock, Nova Multimodal) and the S3 Vectors index that holds one text vector per wine.
+"""Embeddings (Bedrock, Nova Multimodal) and the S3 Vectors indexes for wine text and label photos.
 
 Text and photo vectors live in separate indexes and are never compared with each other.
 """
 
+import base64
 import json
 from typing import Any, Literal
 
@@ -11,8 +12,9 @@ from .models import Wine
 EMBEDDING_MODEL_ID = "amazon.nova-2-multimodal-embeddings-v1:0"
 EMBEDDING_DIMENSION = 1024
 
-# Nova embedding purposes: GENERIC_INDEX for stored vectors, TEXT_RETRIEVAL for queries against a text-only index.
-Purpose = Literal["GENERIC_INDEX", "TEXT_RETRIEVAL"]
+# Nova embedding purposes: GENERIC_INDEX for stored vectors; TEXT_RETRIEVAL and IMAGE_RETRIEVAL for queries
+# against a text-only or image-only index.
+Purpose = Literal["GENERIC_INDEX", "TEXT_RETRIEVAL", "IMAGE_RETRIEVAL"]
 
 
 class Embedder:
@@ -21,12 +23,25 @@ class Embedder:
         self._model_id = model_id
 
     def embed_text(self, text: str, purpose: Purpose) -> list[float]:
+        return self._embed(purpose, text={"truncationMode": "END", "value": text})
+
+    def embed_image(self, image: bytes, image_format: str, purpose: Purpose) -> list[float]:
+        return self._embed(
+            purpose,
+            image={
+                "format": image_format,
+                "detailLevel": "STANDARD_IMAGE",
+                "source": {"bytes": base64.b64encode(image).decode()},
+            },
+        )
+
+    def _embed(self, purpose: Purpose, **content: dict[str, Any]) -> list[float]:
         body = {
             "taskType": "SINGLE_EMBEDDING",
             "singleEmbeddingParams": {
                 "embeddingPurpose": purpose,
                 "embeddingDimension": EMBEDDING_DIMENSION,
-                "text": {"truncationMode": "END", "value": text},
+                **content,
             },
         }
         resp = self._client.invoke_model(
@@ -76,3 +91,42 @@ class WineTextIndex:
             **self._target, topK=top_k, queryVector={"float32": vector}, filter={"user_id": {"$eq": user_id}}
         )
         return [v["key"] for v in resp.get("vectors", [])]
+
+
+class WinePhotoIndex:
+    """One vector per label photo, keyed by its S3 key, filterable by user_id, with the wine_id it belongs to."""
+
+    def __init__(self, s3vectors: Any, embedder: Embedder, *, bucket: str, index: str) -> None:
+        self._client = s3vectors
+        self._embedder = embedder
+        self._target = {"vectorBucketName": bucket, "indexName": index}
+
+    def upsert(self, photo_key: str, image: bytes, image_format: str, *, user_id: str, wine_id: str) -> None:
+        vector = self._embedder.embed_image(image, image_format, "GENERIC_INDEX")
+        self._client.put_vectors(
+            **self._target,
+            vectors=[
+                {
+                    "key": photo_key,
+                    "data": {"float32": vector},
+                    "metadata": {"user_id": user_id, "wine_id": wine_id},
+                }
+            ],
+        )
+
+    def delete(self, photo_keys: list[str]) -> None:
+        if photo_keys:
+            self._client.delete_vectors(**self._target, keys=photo_keys)
+
+    def query(self, user_id: str, image: bytes, image_format: str, top_k: int = 10) -> list[str]:
+        """IDs of this user's wines with the most similar label photos, closest first, each wine once."""
+        vector = self._embedder.embed_image(image, image_format, "IMAGE_RETRIEVAL")
+        resp = self._client.query_vectors(
+            **self._target,
+            topK=top_k,
+            queryVector={"float32": vector},
+            filter={"user_id": {"$eq": user_id}},
+            returnMetadata=True,
+        )
+        # A wine with several photos can match more than once; its closest photo sets its rank.
+        return list(dict.fromkeys(v["metadata"]["wine_id"] for v in resp.get("vectors", [])))

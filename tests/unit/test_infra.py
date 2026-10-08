@@ -41,18 +41,39 @@ def test_lambda_is_arm64_python_with_env(asset_dir):
                     "ALLOWED_HOSTS": "mcp.wine-dev.redswimmer.com",
                     "VECTOR_BUCKET": "wine-cellar-vectors-dev",
                     "TEXT_INDEX": "wine-text",
+                    "PHOTO_INDEX": "wine-photos",
+                    "PHOTO_BUCKET": Match.any_value(),
                 }
             },
         },
     )
 
 
-def test_text_vector_index(asset_dir):
+def test_text_and_photo_vector_indexes(asset_dir):
     t = _service(asset_dir)
     t.has_resource_properties("AWS::S3Vectors::VectorBucket", {"VectorBucketName": "wine-cellar-vectors-dev"})
-    t.has_resource_properties(
-        "AWS::S3Vectors::Index",
-        {"IndexName": "wine-text", "DataType": "float32", "Dimension": 1024, "DistanceMetric": "cosine"},
+    for name in ["wine-text", "wine-photos"]:
+        t.has_resource(
+            "AWS::S3Vectors::Index",
+            {
+                "Properties": {"IndexName": name, "DataType": "float32", "Dimension": 1024, "DistanceMetric": "cosine"},
+                "DependsOn": Match.array_with([Match.string_like_regexp("Vectors")]),
+            },
+        )
+
+
+def test_photo_bucket_is_private_and_encrypted(asset_dir):
+    _service(asset_dir).has_resource_properties(
+        "AWS::S3::Bucket",
+        {
+            "PublicAccessBlockConfiguration": {
+                "BlockPublicAcls": True,
+                "BlockPublicPolicy": True,
+                "IgnorePublicAcls": True,
+                "RestrictPublicBuckets": True,
+            },
+            "BucketEncryption": Match.object_like({}),
+        },
     )
 
 
@@ -67,7 +88,10 @@ def test_lambda_can_use_vectors_and_only_the_embedding_model(asset_dir):
                         Match.object_like(
                             {
                                 "Action": Match.array_with(["s3vectors:PutVectors", "s3vectors:QueryVectors"]),
-                                "Resource": {"Fn::GetAtt": [Match.any_value(), "IndexArn"]},
+                                "Resource": [
+                                    {"Fn::GetAtt": [Match.string_like_regexp("TextIndex"), "IndexArn"]},
+                                    {"Fn::GetAtt": [Match.string_like_regexp("PhotoIndex"), "IndexArn"]},
+                                ],
                             }
                         ),
                         Match.object_like(

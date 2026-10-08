@@ -9,7 +9,15 @@ from mcp.client.streamable_http import create_mcp_http_client, streamable_http_c
 
 pytestmark = pytest.mark.anyio
 
-EXPECTED_TOOLS = {"save_wine", "add_tasting", "search_wines", "list_wines", "get_wine", "delete_wine"}
+EXPECTED_TOOLS = {
+    "save_wine",
+    "add_wine_photo",
+    "add_tasting",
+    "search_wines",
+    "list_wines",
+    "get_wine",
+    "delete_wine",
+}
 PRODUCER = "Smoke Test Cellars"
 TEST_WINE = {"producer": PRODUCER, "name": "Smoke Test Red", "vintage": 2020, "verdict": "like"}
 INITIALIZE = {

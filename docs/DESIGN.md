@@ -79,7 +79,8 @@ Text search loads the user's wines with one Query and fuzzy-matches in the
 Lambda. A personal list of a few hundred to a few thousand wines fits easily,
 and it avoids running a search cluster.
 
-Photos go to `s3://<bucket>/<user_id>/<wine_id>/<ulid>.jpg`.
+Photos go to `s3://<bucket>/<user_id>/<wine_id>/<ulid>.<jpg|png|webp|gif>`, in
+a private, encrypted bucket. Deleting a wine deletes its photos.
 
 S3 Vectors holds one vector bucket per stage with two indexes, both 1024
 dimensions and cosine distance, and every query filtered to the caller's
@@ -88,18 +89,19 @@ dimensions and cosine distance, and every query filtered to the caller's
 - `wine-text`: one vector per wine, keyed by `wine_id`. It embeds the label,
   region, style, grapes, verdict, notes and tasting notes, and is rewritten
   whenever the wine changes and deleted with it.
-- `wine-photos` (step 3, photos): one vector per photo, with `wine_id` as
-  metadata.
+- `wine-photos`: one vector per photo, keyed by its S3 key, with `wine_id` as
+  metadata. A wine with several photos matches through whichever is closest.
 
 Text and photo vectors are never compared with each other. DynamoDB is the
 source of truth: if a vector write fails the save still succeeds, and
-`uv run wine-tokens --stage dev reindex` rebuilds every wine's text vector.
+`uv run wine-tokens --stage dev reindex` rebuilds every wine's text and photo
+vectors.
 
 ## MCP tools
 
 | Tool | What it does |
 | --- | --- |
-| `save_wine` | Create or update a wine with a verdict, rating and notes. Matches an existing wine first so repeats don't create duplicates. |
+| `save_wine` | Create or update a wine with a verdict, rating, notes and optionally a label photo. Matches an existing wine first so repeats don't create duplicates. |
 | `add_tasting` | Add a dated tasting note and verdict to a wine. |
 | `search_wines` | Search by text, a label photo, or both, e.g. "that bold red I loved" or a photo plus what the agent read off the label. Returns ranked matches with verdicts and notes. |
 | `add_wine_photo` | Attach a label photo to a wine. A wine can have several. |
@@ -109,9 +111,10 @@ source of truth: if a vector write fails the save still succeeds, and
 No tool takes a user ID. The bearer token identifies the user, so the user is
 fixed by how the sandbox was configured, not by anything the agent says.
 
-Photos arrive base64-encoded in the tool call (`search_wines`, `save_wine`, `add_wine_photo`). NemoClaw's egress policy caps
-an MCP request body at 131,072 bytes, so a photo must be about 90 KB or less
-before encoding. Telegram stores every photo in several sizes, and the ~800 px
+Photos arrive base64-encoded in the tool call (`search_wines`, `save_wine`,
+`add_wine_photo`) as JPEG, PNG, WebP or GIF. NemoClaw's egress policy caps an
+MCP request body at 131,072 bytes, so a photo must be 95 KB or less before
+encoding. Telegram stores every photo in several sizes, and the ~800 px
 version is usually under that while still readable for label text. The tool
 rejects oversized images with a message telling the agent to send a smaller
 size. If that proves unreliable, the photo tools can also accept a Telegram

@@ -10,6 +10,8 @@ class Settings:
     allowed_hosts: list[str] = field(default_factory=list)
     vector_bucket: str = ""
     text_index: str = ""
+    photo_index: str = ""
+    photo_bucket: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -19,4 +21,6 @@ class Settings:
             allowed_hosts=[h.strip() for h in hosts.split(",") if h.strip()],
             vector_bucket=os.environ.get("VECTOR_BUCKET", ""),
             text_index=os.environ.get("TEXT_INDEX", ""),
+            photo_index=os.environ.get("PHOTO_INDEX", ""),
+            photo_bucket=os.environ.get("PHOTO_BUCKET", ""),
         )

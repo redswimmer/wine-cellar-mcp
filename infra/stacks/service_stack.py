@@ -1,4 +1,5 @@
-"""The wine cellar MCP service: API Gateway, Lambda, DynamoDB (wines and API tokens) and S3 Vectors (search)."""
+"""The wine cellar MCP service: API Gateway, Lambda, DynamoDB (wines and API tokens), S3 (label photos) and
+S3 Vectors (search)."""
 
 from dataclasses import dataclass
 
@@ -16,6 +17,7 @@ from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_route53 as route53
 from aws_cdk import aws_route53_targets as targets
+from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3vectors as s3vectors
 from aws_cdk.aws_apigatewayv2_integrations import HttpLambdaIntegration
 from constructs import Construct
@@ -23,6 +25,7 @@ from constructs import Construct
 from wine_cellar.vectors import EMBEDDING_DIMENSION, EMBEDDING_MODEL_ID
 
 TEXT_INDEX_NAME = "wine-text"
+PHOTO_INDEX_NAME = "wine-photos"
 
 
 @dataclass(frozen=True)
@@ -68,17 +71,30 @@ class WineCellarServiceStack(Stack):
             self, "Vectors", vector_bucket_name=f"wine-cellar-vectors-{config.stage}"
         )
         vector_bucket.apply_removal_policy(removal)
-        text_index = s3vectors.CfnIndex(
+        indexes = {}
+        for construct_id, index_name in [("TextIndex", TEXT_INDEX_NAME), ("PhotoIndex", PHOTO_INDEX_NAME)]:
+            index = s3vectors.CfnIndex(
+                self,
+                construct_id,
+                vector_bucket_name=vector_bucket.vector_bucket_name,
+                index_name=index_name,
+                data_type="float32",
+                dimension=EMBEDDING_DIMENSION,
+                distance_metric="cosine",
+            )
+            index.node.add_dependency(vector_bucket)
+            index.apply_removal_policy(removal)
+            indexes[index_name] = index
+
+        photo_bucket = s3.Bucket(
             self,
-            "TextIndex",
-            vector_bucket_name=vector_bucket.vector_bucket_name,
-            index_name=TEXT_INDEX_NAME,
-            data_type="float32",
-            dimension=EMBEDDING_DIMENSION,
-            distance_metric="cosine",
+            "Photos",
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            encryption=s3.BucketEncryption.S3_MANAGED,
+            enforce_ssl=True,
+            removal_policy=removal,
+            auto_delete_objects=not config.is_prod,
         )
-        text_index.add_dependency(vector_bucket)
-        text_index.apply_removal_policy(removal)
 
         fn = lambda_.Function(
             self,
@@ -94,6 +110,8 @@ class WineCellarServiceStack(Stack):
                 "ALLOWED_HOSTS": config.domain.domain_name if config.domain else "",
                 "VECTOR_BUCKET": vector_bucket.vector_bucket_name or "",
                 "TEXT_INDEX": TEXT_INDEX_NAME,
+                "PHOTO_INDEX": PHOTO_INDEX_NAME,
+                "PHOTO_BUCKET": photo_bucket.bucket_name,
             },
             log_group=logs.LogGroup(
                 self, "McpLogs", retention=logs.RetentionDays.ONE_MONTH, removal_policy=RemovalPolicy.DESTROY
@@ -109,9 +127,11 @@ class WineCellarServiceStack(Stack):
                     "s3vectors:QueryVectors",
                     "s3vectors:GetVectors",
                 ],
-                resources=[text_index.attr_index_arn],
+                resources=[index.attr_index_arn for index in indexes.values()],
             )
         )
+        photo_bucket.grant_put(fn)
+        photo_bucket.grant_delete(fn)
         fn.add_to_role_policy(
             iam.PolicyStatement(
                 actions=["bedrock:InvokeModel"],
@@ -171,3 +191,5 @@ class WineCellarServiceStack(Stack):
         CfnOutput(self, "TableName", value=table.table_name)
         CfnOutput(self, "VectorBucketName", value=vector_bucket.vector_bucket_name or "")
         CfnOutput(self, "TextIndexName", value=TEXT_INDEX_NAME)
+        CfnOutput(self, "PhotoIndexName", value=PHOTO_INDEX_NAME)
+        CfnOutput(self, "PhotoBucketName", value=photo_bucket.bucket_name)

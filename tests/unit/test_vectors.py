@@ -1,5 +1,3 @@
-import io
-import json
 from datetime import date
 
 import pytest
@@ -8,49 +6,11 @@ from wine_cellar.models import Style, Tasting, Verdict, Wine
 from wine_cellar.repository import WineRepository
 from wine_cellar.search import fuse
 from wine_cellar.service import WineService
-from wine_cellar.vectors import EMBEDDING_DIMENSION, EMBEDDING_MODEL_ID, Embedder, WineTextIndex, wine_text
+from wine_cellar.vectors import EMBEDDING_DIMENSION, Embedder, WineTextIndex, wine_text
+
+from .fakes import FakeBedrock, FakeS3Vectors
 
 USER = "usr_1"
-
-
-class FakeBedrock:
-    def __init__(self) -> None:
-        self.bodies: list[dict] = []
-
-    def invoke_model(self, *, modelId, body, accept, contentType):
-        assert modelId == EMBEDDING_MODEL_ID
-        self.bodies.append(json.loads(body))
-        out = {"embeddings": [{"embeddingType": "TEXT", "embedding": [0.1] * EMBEDDING_DIMENSION}]}
-        return {"body": io.BytesIO(json.dumps(out).encode())}
-
-
-class FakeS3Vectors:
-    def __init__(self, *, fail: bool = False) -> None:
-        self.vectors: dict[str, dict] = {}
-        self.fail = fail
-
-    def put_vectors(self, *, vectorBucketName, indexName, vectors):
-        if self.fail:
-            raise RuntimeError("s3vectors down")
-        assert (vectorBucketName, indexName) == ("vb", "wine-text")
-        self.vectors.update({v["key"]: v for v in vectors})
-
-    def delete_vectors(self, *, vectorBucketName, indexName, keys):
-        if self.fail:
-            raise RuntimeError("s3vectors down")
-        for k in keys:
-            self.vectors.pop(k, None)
-
-    def query_vectors(self, *, vectorBucketName, indexName, topK, queryVector, filter):
-        if self.fail:
-            raise RuntimeError("s3vectors down")
-        self.last_query = {"topK": topK, "filter": filter}
-        # Pretend the closest vectors are whatever `ranking` says, restricted by the user filter.
-        user = filter["user_id"]["$eq"]
-        keys = [k for k in self.ranking if self.vectors.get(k, {}).get("metadata", {}).get("user_id") == user]
-        return {"vectors": [{"key": k} for k in keys[:topK]]}
-
-    ranking: list[str] = []
 
 
 @pytest.fixture
