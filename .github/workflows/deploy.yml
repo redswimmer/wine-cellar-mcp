@@ -1,0 +1,77 @@
+name: Deploy
+
+# Dev deploys on every merge to main so code and infrastructure are proven together early.
+# Run it by hand to push any branch to dev, or to deploy main to prod.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Environment to deploy
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+concurrency:
+  group: deploy-${{ inputs.stage || 'dev' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: checks
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.stage || 'dev' }}
+    env:
+      STAGE: ${{ inputs.stage || 'dev' }}
+    steps:
+      - name: Check AWS setup
+        id: setup
+        run: |
+          if [ -z "${{ vars.AWS_DEPLOY_ROLE_ARN }}" ]; then
+            echo "::warning::AWS_DEPLOY_ROLE_ARN is not set; skipping deploy. See docs/DEPLOY.md."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Refuse prod from a branch other than main
+        if: env.STAGE == 'prod' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Prod deploys only from main."
+          exit 1
+      - uses: actions/checkout@v4
+        if: steps.setup.outputs.ready == 'true'
+      - uses: astral-sh/setup-uv@v6
+        if: steps.setup.outputs.ready == 'true'
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        if: steps.setup.outputs.ready == 'true'
+        with:
+          node-version: 22
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: steps.setup.outputs.ready == 'true'
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Build Lambda package
+        if: steps.setup.outputs.ready == 'true'
+        run: ./scripts/build_lambda.sh
+      - name: CDK deploy
+        if: steps.setup.outputs.ready == 'true'
+        run: |
+          context=()
+          if [ -n "${{ vars.HOSTED_ZONE_ID }}" ]; then context+=(-c "hostedZoneId=${{ vars.HOSTED_ZONE_ID }}"); fi
+          npx -y aws-cdk@2.1144.0 deploy "WineCellar-${STAGE}" "${context[@]}" \
+            --require-approval never --outputs-file cdk-outputs.json
+          echo "### Deployed WineCellar-${STAGE}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat cdk-outputs.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
