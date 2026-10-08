@@ -4,7 +4,7 @@ from collections.abc import Callable
 from datetime import date
 from typing import Annotated, Any
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
@@ -12,18 +12,26 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 from starlette.types import ASGIApp
 
-from .auth import BearerAuthMiddleware
+from .auth import USER_ID_STATE_KEY, BearerAuthMiddleware
 from .models import Style, Verdict, Wine
 from .service import WineNotFoundError, WineService
 
 INSTRUCTIONS = """\
-Remembers which wines a person has tried and what they thought of them.
-Always pass the Telegram user ID of the person you are talking to as telegram_user_id.
+Remembers which wines the user has tried and what they thought of them.
 Before saving a wine, use search_wines to check whether it is already recorded.
 """
 
-UserId = Annotated[str, Field(description="Telegram user ID of the person in the conversation")]
 WineId = Annotated[str, Field(description="wine_id returned by another tool")]
+
+
+def current_user(ctx: Context) -> str:
+    """The user this request acts for, as resolved from its bearer token by BearerAuthMiddleware."""
+    request = ctx.request_context.request
+    user_id = request.scope.get("state", {}).get(USER_ID_STATE_KEY) if request is not None else None
+    if not user_id:
+        # The middleware rejects unauthenticated requests, so this means the app was wired wrong.
+        raise ToolError("No authenticated user for this request")
+    return user_id
 
 
 def _summary(wine: Wine, score: float | None = None) -> dict[str, Any]:
@@ -39,7 +47,7 @@ def build_server(service: WineService) -> MCPServer:
 
     @mcp.tool(annotations=ToolAnnotations(idempotent_hint=True))
     def save_wine(
-        telegram_user_id: UserId,
+        ctx: Context,
         producer: Annotated[str, Field(description="Winery or producer, e.g. 'Ridge'")],
         name: Annotated[str, Field(description="Cuvée or wine name, e.g. 'Monte Bello'")] = "",
         vintage: Annotated[int | None, Field(description="Vintage year; omit for non-vintage")] = None,
@@ -53,7 +61,7 @@ def build_server(service: WineService) -> MCPServer:
     ) -> dict[str, Any]:
         """Record a wine and the person's opinion of it. Updates the existing record if the wine was saved before."""
         wine, created = service.save_wine(
-            telegram_user_id,
+            current_user(ctx),
             producer=producer,
             name=name,
             vintage=vintage,
@@ -69,7 +77,7 @@ def build_server(service: WineService) -> MCPServer:
 
     @mcp.tool()
     def add_tasting(
-        telegram_user_id: UserId,
+        ctx: Context,
         wine_id: WineId,
         notes: str = "",
         verdict: Verdict | None = None,
@@ -79,7 +87,7 @@ def build_server(service: WineService) -> MCPServer:
         """Add a dated tasting note to a wine already recorded."""
         try:
             wine = service.add_tasting(
-                telegram_user_id, wine_id, notes=notes, verdict=verdict, tasted_on=tasted_on, where=where
+                current_user(ctx), wine_id, notes=notes, verdict=verdict, tasted_on=tasted_on, where=where
             )
         except WineNotFoundError as e:
             raise ToolError(str(e)) from e
@@ -87,17 +95,17 @@ def build_server(service: WineService) -> MCPServer:
 
     @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
     def search_wines(
-        telegram_user_id: UserId,
+        ctx: Context,
         query: Annotated[str, Field(description="Free text: producer, wine, vintage, region or grape")],
         limit: Annotated[int, Field(ge=1, le=20)] = 5,
     ) -> dict[str, Any]:
         """Find wines the person has recorded that match free text, best match first, with their verdicts and notes."""
-        matches = service.search_wines(telegram_user_id, query, limit=limit)
+        matches = service.search_wines(current_user(ctx), query, limit=limit)
         return {"matches": [_summary(w, s) for w, s in matches]}
 
     @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
     def list_wines(
-        telegram_user_id: UserId,
+        ctx: Context,
         verdict: Verdict | None = None,
         style: Style | None = None,
         region: Annotated[str | None, Field(description="Region or country contains this text")] = None,
@@ -105,22 +113,22 @@ def build_server(service: WineService) -> MCPServer:
         limit: Annotated[int, Field(ge=1, le=100)] = 25,
     ) -> dict[str, Any]:
         """List recorded wines, most recently updated first, optionally filtered."""
-        wines = service.list_wines(telegram_user_id, verdict=verdict, style=style, region=region, varietal=varietal)
+        wines = service.list_wines(current_user(ctx), verdict=verdict, style=style, region=region, varietal=varietal)
         return {"total": len(wines), "wines": [_summary(w) for w in wines[:limit]]}
 
     @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
-    def get_wine(telegram_user_id: UserId, wine_id: WineId) -> dict[str, Any]:
+    def get_wine(ctx: Context, wine_id: WineId) -> dict[str, Any]:
         """Fetch one wine with its full tasting history."""
         try:
-            return {"wine": _summary(service.get_wine(telegram_user_id, wine_id))}
+            return {"wine": _summary(service.get_wine(current_user(ctx), wine_id))}
         except WineNotFoundError as e:
             raise ToolError(str(e)) from e
 
     @mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
-    def delete_wine(telegram_user_id: UserId, wine_id: WineId) -> dict[str, Any]:
+    def delete_wine(ctx: Context, wine_id: WineId) -> dict[str, Any]:
         """Permanently remove a wine. Only use when the person explicitly asks."""
         try:
-            service.delete_wine(telegram_user_id, wine_id)
+            service.delete_wine(current_user(ctx), wine_id)
         except WineNotFoundError as e:
             raise ToolError(str(e)) from e
         return {"deleted": wine_id}
@@ -129,7 +137,7 @@ def build_server(service: WineService) -> MCPServer:
 
 
 def build_app(
-    service: WineService, token_provider: Callable[[], str], allowed_hosts: list[str]
+    service: WineService, resolve_user: Callable[[str], str | None], allowed_hosts: list[str]
 ) -> tuple[ASGIApp, StreamableHTTPSessionManager]:
     """Stateless, JSON-response Streamable HTTP app at /mcp behind a bearer-token check.
 
@@ -147,4 +155,4 @@ def build_app(
         transport_security=security,
         max_request_body_size=1024 * 1024,
     )
-    return BearerAuthMiddleware(app, token_provider), server.session_manager
+    return BearerAuthMiddleware(app, resolve_user), server.session_manager

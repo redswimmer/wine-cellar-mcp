@@ -3,34 +3,41 @@
 import importlib
 import json
 
-import boto3
 import pytest
 
-TOKEN = "test-token"
+from wine_cellar.tokens import TokenStore
+from wine_cellar.users import UserStore
+
 HOST = "mcp.wine-dev.redswimmer.com"
+TOKEN = ""  # set per test by the handler fixture
 
 
 @pytest.fixture
-def handler(table, monkeypatch):
-    secret = boto3.client("secretsmanager", region_name="us-east-1").create_secret(
-        Name="wine-token", SecretString=TOKEN
-    )
+def tokens(table):
+    users, store = UserStore(table), TokenStore(table)
+    return {name: store.create(users.create(name).user_id, f"{name}-claw") for name in ("andrew", "sam")}
+
+
+@pytest.fixture
+def handler(table, tokens, monkeypatch):
+    global TOKEN
+    TOKEN = tokens["andrew"]
     monkeypatch.setenv("TABLE_NAME", table.name)
-    monkeypatch.setenv("TOKEN_SECRET_ARN", secret["ARN"])
     monkeypatch.setenv("ALLOWED_HOSTS", HOST)
     import wine_cellar.handler as mod
 
     return importlib.reload(mod).handler
 
 
-def _event(body: dict, *, token: str | None = TOKEN, host: str = HOST) -> dict:
+def _event(body: dict, *, token: str | None = None, host: str = HOST) -> dict:
+    token = TOKEN if token is None else token
     headers = {
         "host": host,
         "content-type": "application/json",
         "accept": "application/json, text/event-stream",
         "mcp-protocol-version": "2025-06-18",
     }
-    if token is not None:
+    if token:
         headers["authorization"] = f"Bearer {token}"
     return {
         "version": "2.0",
@@ -67,8 +74,9 @@ def _call(handler, body, **kw):
 
 
 def test_rejects_missing_or_wrong_token(handler):
-    assert _call(handler, _rpc("tools/list"), token=None)[0] == 401
+    assert _call(handler, _rpc("tools/list"), token="")[0] == 401
     assert _call(handler, _rpc("tools/list"), token="nope")[0] == 401
+    assert _call(handler, _rpc("tools/list"), token="wct_unknown")[0] == 401
 
 
 def test_rejects_unknown_host(handler):
@@ -94,7 +102,7 @@ def test_initialize_and_list_tools(handler):
 
 
 def test_save_then_search_over_http(handler):
-    args = {"telegram_user_id": "42", "producer": "Ridge", "name": "Monte Bello", "vintage": 2019, "verdict": "love"}
+    args = {"producer": "Ridge", "name": "Monte Bello", "vintage": 2019, "verdict": "love"}
     status, body = _call(handler, _rpc("tools/call", {"name": "save_wine", "arguments": args}))
     assert status == 200, body
     assert not body["result"].get("isError"), body
@@ -102,7 +110,7 @@ def test_save_then_search_over_http(handler):
 
     status, body = _call(
         handler,
-        _rpc("tools/call", {"name": "search_wines", "arguments": {"telegram_user_id": "42", "query": "monte bello"}}),
+        _rpc("tools/call", {"name": "search_wines", "arguments": {"query": "monte bello"}}),
     )
     matches = body["result"]["structuredContent"]["matches"]
     assert matches[0]["verdict"] == "love"
@@ -112,7 +120,7 @@ def test_save_then_search_over_http(handler):
 def test_unknown_wine_is_a_tool_error(handler):
     status, body = _call(
         handler,
-        _rpc("tools/call", {"name": "get_wine", "arguments": {"telegram_user_id": "42", "wine_id": "missing"}}),
+        _rpc("tools/call", {"name": "get_wine", "arguments": {"wine_id": "missing"}}),
     )
     assert status == 200
     assert body["result"]["isError"] is True
@@ -123,3 +131,21 @@ def test_tool_annotations_reach_the_client(handler):
     tools = {t["name"]: t for t in body["result"]["tools"]}
     assert tools["search_wines"]["annotations"]["readOnlyHint"] is True
     assert tools["delete_wine"]["annotations"]["destructiveHint"] is True
+
+
+def test_tools_do_not_ask_for_a_user_id(handler):
+    _, body = _call(handler, _rpc("tools/list"))
+    for tool in body["result"]["tools"]:
+        props = tool["inputSchema"].get("properties", {})
+        assert not any("user" in name or name == "ctx" for name in props), (tool["name"], list(props))
+
+
+def test_token_decides_the_user(handler, tokens):
+    save = _rpc("tools/call", {"name": "save_wine", "arguments": {"producer": "Ridge", "name": "Monte Bello"}})
+    assert _call(handler, save)[0] == 200
+
+    listing = _rpc("tools/call", {"name": "list_wines", "arguments": {}})
+    _, mine = _call(handler, listing)
+    assert mine["result"]["structuredContent"]["total"] == 1
+    _, theirs = _call(handler, listing, token=tokens["sam"])
+    assert theirs["result"]["structuredContent"]["total"] == 0

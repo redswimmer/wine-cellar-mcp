@@ -68,21 +68,21 @@ instead of failing.
 
 ## After a deploy
 
-The workflow summary shows the stack outputs, including `McpUrl`. Get the
-token the agent needs:
+The workflow summary shows the stack outputs, including `McpUrl`.
+
+Add each user once with a unique username. `add-user` generates their ID (`usr_...`, shown on
+stderr) and prints their first token. The token is printed once and only its
+hash is stored, so put it straight into that user's sandbox:
 
 ```
-aws secretsmanager get-secret-value --secret-id <TokenSecretArn output> \
-  --query SecretString --output text
-```
-
-Connect the claw (NemoClaw keeps the token out of the agent's config):
-
-```
-export WINE_MCP_TOKEN=<token>
+export WINE_MCP_TOKEN=$(uv run wine-tokens --stage dev add-user --username andrew --label andrew-nemoclaw)
 nemoclaw <sandbox> mcp add wine --url https://mcp.wine-dev.redswimmer.com/mcp --env WINE_MCP_TOKEN
 unset WINE_MCP_TOKEN
 ```
+
+`list-users` and `list-tokens` show what exists, `revoke-token <hash-prefix>`
+revokes a token within a minute, and `create-token --user <username> --label ...`
+issues a replacement for an existing user (their wines stay put).
 
 ## Deploying a branch to dev
 
@@ -94,5 +94,5 @@ puts dev back on `main`.
 
 - The first deploy with a custom domain waits for the ACM certificate's DNS
   validation, which usually takes a few minutes.
-- Dev's table and token are deleted when the dev stack is destroyed; prod's
-  are retained and the prod table has deletion protection on.
+- Dev's table (wines and tokens) is deleted when the dev stack is destroyed;
+  prod's is retained and the prod table has deletion protection on.
