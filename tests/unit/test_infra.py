@@ -75,7 +75,8 @@ def test_prod_retains_data_and_dev_does_not(asset_dir):
 
 def test_oidc_role_trusts_only_repo_environments():
     app = cdk.App()
-    stack = GithubOidcStack(app, "O", env=ENV, repo="redswimmer/wine-cellar-service", environments=["dev", "prod"])
+    prefix = "repo:redswimmer@38088099/wine-cellar-service@1410527756"
+    stack = GithubOidcStack(app, "O", env=ENV, sub_prefix=prefix, environments=["dev", "prod"])
     Template.from_stack(stack).has_resource_properties(
         "AWS::IAM::Role",
         {
@@ -84,12 +85,12 @@ def test_oidc_role_trusts_only_repo_environments():
                     Match.object_like(
                         {
                             "Condition": {
-                                "StringEquals": {"token.actions.githubusercontent.com:aud": "sts.amazonaws.com"},
-                                "StringLike": {
+                                "StringEquals": {
+                                    "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
                                     "token.actions.githubusercontent.com:sub": [
-                                        "repo:redswimmer/wine-cellar-service:environment:dev",
-                                        "repo:redswimmer/wine-cellar-service:environment:prod",
-                                    ]
+                                        f"{prefix}:environment:dev",
+                                        f"{prefix}:environment:prod",
+                                    ],
                                 },
                             }
                         }
