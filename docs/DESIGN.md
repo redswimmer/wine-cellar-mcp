@@ -157,9 +157,11 @@ to put any branch on dev, or to deploy `main` to prod. GitHub Actions assumes
 an AWS role through OIDC, so there are no long-lived keys. Setup is in
 [DEPLOY.md](DEPLOY.md).
 
-Tests are unit tests only for now. The Lambda handler tests drive the real
-handler with API Gateway events against moto, which covers the HTTP, auth and
-MCP layers without deploying.
+`tests/unit` is what CI runs. The Lambda handler tests drive the real handler
+with API Gateway events against moto, which covers the HTTP, auth and MCP
+layers without deploying. `tests/e2e` holds end-to-end smoke tests against a
+deployed endpoint; they need a token, so they run by hand for now (see
+[Connecting clients](#connecting-clients)).
 
 ## Build steps
 
@@ -219,8 +221,10 @@ wines would share one user ID; give each person their own sandbox and token.
 
 Any MCP client that speaks Streamable HTTP and can send an `Authorization`
 header works. To check a deployment end to end without a client, run
-`uv run python scripts/smoke_test.py` (it reads `~/.config/wine-cellar/dev-token`,
-or `$WINE_MCP_TOKEN`, and cleans up its test wine).
+`uv run pytest tests/e2e`. These end-to-end tests call the deployed endpoint
+(`$WINE_MCP_URL`, default dev) with the token in `$WINE_MCP_TOKEN` or
+`~/.config/wine-cellar/dev-token`, skip when there is no token, and delete
+their test wine. Plain `uv run pytest` runs only the unit tests.
 
 ### Claude Code
 
