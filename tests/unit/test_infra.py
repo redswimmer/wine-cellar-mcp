@@ -38,7 +38,6 @@ def test_lambda_is_arm64_python_with_env(asset_dir):
             "Environment": {
                 "Variables": {
                     "TABLE_NAME": Match.any_value(),
-                    "TOKEN_SECRET_ARN": Match.any_value(),
                     "ALLOWED_HOSTS": "mcp.wine-dev.redswimmer.com",
                 }
             },
@@ -99,3 +98,7 @@ def test_oidc_role_trusts_only_repo_environments():
             }
         },
     )
+
+
+def test_no_shared_secret(asset_dir):
+    _service(asset_dir).resource_count_is("AWS::SecretsManager::Secret", 0)

@@ -1,4 +1,4 @@
-"""The wine cellar MCP service: API Gateway, Lambda, DynamoDB and the bearer token."""
+"""The wine cellar MCP service: API Gateway, Lambda and DynamoDB (wines and API tokens)."""
 
 from dataclasses import dataclass
 
@@ -15,7 +15,6 @@ from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_route53 as route53
 from aws_cdk import aws_route53_targets as targets
-from aws_cdk import aws_secretsmanager as secretsmanager
 from aws_cdk.aws_apigatewayv2_integrations import HttpLambdaIntegration
 from constructs import Construct
 
@@ -58,14 +57,6 @@ class WineCellarServiceStack(Stack):
             removal_policy=removal,
         )
 
-        token = secretsmanager.Secret(
-            self,
-            "McpToken",
-            description=f"Bearer token the OpenClaw agent sends to the wine MCP server ({config.stage})",
-            generate_secret_string=secretsmanager.SecretStringGenerator(exclude_punctuation=True, password_length=48),
-            removal_policy=removal,
-        )
-
         fn = lambda_.Function(
             self,
             "McpFunction",
@@ -77,7 +68,6 @@ class WineCellarServiceStack(Stack):
             timeout=Duration.seconds(25),
             environment={
                 "TABLE_NAME": table.table_name,
-                "TOKEN_SECRET_ARN": token.secret_arn,
                 "ALLOWED_HOSTS": config.domain.domain_name if config.domain else "",
             },
             log_group=logs.LogGroup(
@@ -85,7 +75,6 @@ class WineCellarServiceStack(Stack):
             ),
         )
         table.grant_read_write_data(fn)
-        token.grant_read(fn)
 
         domain_name = None
         if config.domain:
@@ -136,5 +125,4 @@ class WineCellarServiceStack(Stack):
 
         base_url = f"https://{config.domain.domain_name}" if config.domain else api.api_endpoint
         CfnOutput(self, "McpUrl", value=f"{base_url}/mcp")
-        CfnOutput(self, "TokenSecretArn", value=token.secret_arn)
         CfnOutput(self, "TableName", value=table.table_name)

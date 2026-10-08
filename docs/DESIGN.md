@@ -22,9 +22,9 @@ answers is "have I had this wine, and did I like it?"
 | Interface | One MCP server, no separate REST API | The claw is the only client. A REST API can be added later on top of the same service layer. |
 | MCP transport | Streamable HTTP, stateless, JSON responses | Works on Lambda with no sticky sessions. |
 | Hosting | API Gateway HTTP API in front of one Python Lambda (arm64) | Cheapest managed HTTPS front door with custom domains and throttling. |
-| Auth | Bearer token checked in the Lambda, token generated and stored in Secrets Manager | One client, no sign-in flow needed. CloudFormation can generate the secret (it can't create SSM SecureStrings). Constant-time compare. About $0.40 a month per environment. |
+| Auth | One API token per user, issued with the `wine-tokens` CLI; only its SHA-256 hash is stored in DynamoDB | The token decides the user, so agents never pass a user ID and can't act for anyone else. No sign-in flow needed. |
 | AgentCore Gateway | Not used for now | Needs an OAuth provider (Cognito) for inbound auth and adds cost for a single client. Can front the server later without code changes. |
-| Users | Every record is keyed by Telegram user ID | Start with Andrew only; other people the bot admits work without changes. |
+| Users | Every record is keyed by our own user ID (e.g. `andrew`), never by a chat platform's ID | Keeps the server independent of Telegram. Each user has one agent sandbox, configured with that user's token. |
 | Storage | DynamoDB on-demand, S3 for photos, S3 Vectors for embeddings | All pay-per-use and serverless. |
 | Label reading | Claude Haiku on Bedrock with vision | Fast and cheap; returns structured fields. |
 | Embeddings | Bedrock multimodal embeddings (Titan Multimodal G1 or Nova Multimodal, chosen in step 3) | Puts label photos and text in the same vector space. |
@@ -38,11 +38,11 @@ Telegram ──▶ OpenClaw agent ──HTTPS + bearer──▶ API Gateway (HTT
                                                       │
                                                       ▼
                                           Lambda: MCP server (Python)
-                                 ┌──────────┬─────────┼──────────┬───────────┐
-                                 ▼          ▼         ▼          ▼           ▼
-                            DynamoDB   S3 photos  S3 Vectors  Bedrock     Secrets Mgr
-                           (wines)                (index)    (Claude,
-                                                             embeddings)
+                                 ┌──────────┬─────────┴──┬──────────┐
+                                 ▼          ▼            ▼          ▼
+                            DynamoDB   S3 photos    S3 Vectors  Bedrock
+                         (wines and                 (index)    (Claude,
+                          token hashes)                         embeddings)
 ```
 
 ## Data model
@@ -51,7 +51,7 @@ One DynamoDB table, on-demand billing.
 
 | Key | Value |
 | --- | --- |
-| `pk` | `USER#<telegram_user_id>` |
+| `pk` | `USER#<user_id>` |
 | `sk` | `WINE#<wine_id>` (ULID) |
 
 Wine item attributes:
@@ -72,7 +72,7 @@ Text search loads the user's wines with one Query and fuzzy-matches in the
 Lambda. A personal list of a few hundred to a few thousand wines fits easily,
 and it avoids running a search cluster.
 
-Photos go to `s3://<bucket>/<telegram_user_id>/<wine_id>/<ulid>.jpg`.
+Photos go to `s3://<bucket>/<user_id>/<wine_id>/<ulid>.jpg`.
 
 S3 Vectors holds one vector per photo and one per wine's text description,
 with `user_id` and `wine_id` as filterable metadata.
@@ -88,9 +88,8 @@ with `user_id` and `wine_id` as filterable metadata.
 | `list_wines` | Filter by verdict, style, region or varietal. |
 | `get_wine` / `delete_wine` | Fetch or remove one wine. |
 
-Every tool takes `telegram_user_id`. The claw passes the ID of the person it
-is talking to. The bearer token proves the caller is the claw, and the claw
-is trusted to pass the right ID; Telegram itself limits who can reach the bot.
+No tool takes a user ID. The bearer token identifies the user, so the user is
+fixed by how the sandbox was configured, not by anything the agent says.
 
 Photos arrive base64-encoded in the tool call. NemoClaw's egress policy caps
 an MCP request body at 131,072 bytes, so a photo must be about 90 KB or less
@@ -115,10 +114,13 @@ Secrets Manager).
 ## Security
 
 - HTTPS only through the custom domain; the default API endpoint is disabled.
-- Bearer token required on every request, compared in constant time.
+- Bearer token required on every request. Tokens are 256-bit random values
+  with a `wct_` prefix; DynamoDB holds only their SHA-256 hashes. Lookups are
+  cached for 60 seconds per Lambda environment, so a revoked token stops
+  working within a minute.
 - API Gateway throttling caps request rate and burst.
-- The Lambda role can reach only its table, bucket, vector index, the token
-  parameter and the Bedrock models it uses.
+- The Lambda role can reach only its table, bucket, vector index and the
+  Bedrock models it uses.
 - S3 bucket blocks public access and encrypts at rest.
 
 ## Cost and latency
@@ -161,6 +163,20 @@ MCP layers without deploying.
 3. Image and vector search: label reading, embeddings, `check_wine_photo`.
 4. Secure the MCP endpoint, connect OpenClaw, test end to end from Telegram.
 
+## Users and tokens
+
+A user is a row of tokens in the table with no other profile. Adding someone
+means issuing them a token and configuring their sandbox with it:
+
+```
+uv run wine-tokens --stage dev create --user andrew --label andrew-nemoclaw
+uv run wine-tokens --stage dev list
+uv run wine-tokens --stage dev revoke <hash-prefix>
+```
+
+One sandbox maps to one user. If several people ever share one sandbox, their
+wines would share one user ID; give each person their own sandbox and token.
+
 ## Connecting OpenClaw
 
 NemoClaw supports remote MCP servers over HTTPS with Streamable HTTP and puts
@@ -168,7 +184,7 @@ the token in the `Authorization` header. The raw token stays in OpenShell's
 provider store; the agent config holds only a placeholder:
 
 ```
-export WINE_MCP_TOKEN=...   # from Secrets Manager, never committed
+export WINE_MCP_TOKEN=$(uv run wine-tokens --stage prod create --user andrew --label andrew-nemoclaw)
 nemoclaw <sandbox> mcp add wine --url https://mcp.wine.redswimmer.com/mcp --env WINE_MCP_TOKEN
 unset WINE_MCP_TOKEN
 ```

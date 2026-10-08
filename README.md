@@ -16,6 +16,12 @@ uv run ty check
 uv run pytest
 ```
 
+## Users
+
+Each user gets their own API token, which decides whose wines a request reads
+and writes; tools never take a user ID. Issue one with
+`uv run wine-tokens --stage dev create --user <id> --label <where-used>`.
+
 ## Tools
 
 | Tool | What it does |

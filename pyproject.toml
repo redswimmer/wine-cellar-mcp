@@ -12,6 +12,9 @@ dependencies = [
     "rapidfuzz>=3.14.6",
 ]
 
+[project.scripts]
+wine-tokens = "wine_cellar.admin:main"
+
 [dependency-groups]
 dev = [
     "aws-cdk-lib==2.272.0",
