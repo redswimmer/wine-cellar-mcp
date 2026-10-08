@@ -8,6 +8,19 @@ Dev deploys automatically on every merge to `main`. Prod deploys only when the
 You need the AWS CLI signed in to the account that holds `redswimmer.com`,
 plus `uv` and Node 22.
 
+With IAM Identity Center (SSO), select your profile and log in first; CDK and
+the AWS CLI both read `AWS_PROFILE`:
+
+```
+aws configure list-profiles          # find the profile name
+export AWS_PROFILE=<profile-name>
+aws sso login
+aws sts get-caller-identity          # should print the account
+```
+
+"Unable to locate credentials" means no profile is selected; an expired-token
+error means it's time to run `aws sso login` again.
+
 1. **Find the hosted zone ID** for `redswimmer.com`:
 
    ```
