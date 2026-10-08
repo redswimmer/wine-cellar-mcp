@@ -126,8 +126,19 @@ class WineService:
         except Exception:
             log.exception("Text vector delete failed for wine %s", wine_id)
 
-    def search_wines(self, user_id: str, query: str, limit: int = 5) -> list[tuple[Wine, float]]:
-        return search.rank(query, self._repo.list_for_user(user_id), limit=limit)
+    def search_wines(self, user_id: str, query: str, limit: int = 5) -> list[Wine]:
+        """Best matches first: fuzzy name matching merged with meaning-based matching on the text vectors."""
+        wines = {w.wine_id: w for w in self._repo.list_for_user(user_id)}
+        fuzzy = [w.wine_id for w, _ in search.rank(query, list(wines.values()), limit=10)]
+        semantic: list[str] = []
+        if self._text_index is not None:
+            try:
+                semantic = self._text_index.query(user_id, query)
+            except Exception:
+                log.exception("Text vector query failed; using fuzzy matches only")
+        # Vectors can outlive a wine if a delete's vector cleanup failed, so keep only wines that exist.
+        semantic = [wine_id for wine_id in semantic if wine_id in wines]
+        return [wines[wine_id] for wine_id in search.fuse([fuzzy, semantic])[:limit]]
 
     def list_wines(
         self,

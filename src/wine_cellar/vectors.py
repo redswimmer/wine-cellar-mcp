@@ -68,3 +68,11 @@ class WineTextIndex:
 
     def delete(self, wine_id: str) -> None:
         self._client.delete_vectors(**self._target, keys=[wine_id])
+
+    def query(self, user_id: str, text: str, top_k: int = 10) -> list[str]:
+        """IDs of this user's wines whose text is closest in meaning to `text`, closest first."""
+        vector = self._embedder.embed_text(text, "TEXT_RETRIEVAL")
+        resp = self._client.query_vectors(
+            **self._target, topK=top_k, queryVector={"float32": vector}, filter={"user_id": {"$eq": user_id}}
+        )
+        return [v["key"] for v in resp.get("vectors", [])]

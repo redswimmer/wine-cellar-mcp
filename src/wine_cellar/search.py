@@ -24,6 +24,19 @@ def rank(query: str, wines: list[Wine], *, limit: int = 5, min_score: float = 60
     return scored[:limit]
 
 
+def fuse(rankings: list[list[str]], *, k: int = 60) -> list[str]:
+    """Reciprocal rank fusion: merge ranked ID lists, favouring IDs ranked high in any of them.
+
+    Each ID earns 1 / (k + rank) per list it appears in; k = 60 is the usual constant.
+    Ranks are compared rather than scores, because fuzzy and vector scores aren't on the same scale.
+    """
+    scores: dict[str, float] = {}
+    for ranking in rankings:
+        for rank, item in enumerate(ranking, start=1):
+            scores[item] = scores.get(item, 0.0) + 1 / (k + rank)
+    return sorted(scores, key=lambda item: scores[item], reverse=True)
+
+
 def find_same_wine(candidate: Wine, wines: list[Wine]) -> Wine | None:
     """The existing record for the same producer, name and vintage, if any."""
     target = " ".join(p for p in [candidate.producer, candidate.name] if p)
