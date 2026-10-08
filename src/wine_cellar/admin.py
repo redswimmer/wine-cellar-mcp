@@ -8,14 +8,15 @@ import sys
 
 import boto3
 
+from .repository import WineRepository
 from .tokens import TokenStore
 from .users import UserStore
+from .vectors import Embedder, WineTextIndex
 
 
-def _table_name(stage: str) -> str:
+def _stack_outputs(stage: str) -> dict[str, str]:
     stack = boto3.client("cloudformation").describe_stacks(StackName=f"WineCellar-{stage}")["Stacks"][0]
-    outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
-    return outputs["TableName"]
+    return {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -45,9 +46,12 @@ def main(argv: list[str] | None = None) -> int:
     revoke = sub.add_parser("revoke-token", help="Revoke a token by the hash prefix shown in list-tokens")
     revoke.add_argument("hash_prefix")
 
+    sub.add_parser("reindex", help="Rewrite every wine's search vector, e.g. after adding search or changing models")
+
     args = parser.parse_args(argv)
     region = boto3.session.Session().region_name or "us-east-1"
-    table = boto3.resource("dynamodb", region_name=region).Table(_table_name(args.stage))
+    outputs = _stack_outputs(args.stage)
+    table = boto3.resource("dynamodb", region_name=region).Table(outputs["TableName"])
     users, tokens = UserStore(table), TokenStore(table)
 
     if args.command == "add-user":
@@ -79,6 +83,19 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "revoke-token":
         r = tokens.revoke(args.hash_prefix)
         print(f"Revoked {r.token_hash[:12]} ({r.user_id}, {r.label}). Takes effect within a minute.")
+    elif args.command == "reindex":
+        index = WineTextIndex(
+            boto3.client("s3vectors", region_name=region),
+            Embedder(boto3.client("bedrock-runtime", region_name=region)),
+            bucket=outputs["VectorBucketName"],
+            index=outputs["TextIndexName"],
+        )
+        repo = WineRepository(table)
+        for u in users.list():
+            wines = repo.list_for_user(u.user_id)
+            for wine in wines:
+                index.upsert(wine)
+            print(f"{u.username}: {len(wines)} wines indexed", file=sys.stderr)
     return 0
 
 

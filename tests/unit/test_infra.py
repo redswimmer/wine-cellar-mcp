@@ -39,8 +39,47 @@ def test_lambda_is_arm64_python_with_env(asset_dir):
                 "Variables": {
                     "TABLE_NAME": Match.any_value(),
                     "ALLOWED_HOSTS": "mcp.wine-dev.redswimmer.com",
+                    "VECTOR_BUCKET": "wine-cellar-vectors-dev",
+                    "TEXT_INDEX": "wine-text",
                 }
             },
+        },
+    )
+
+
+def test_text_vector_index(asset_dir):
+    t = _service(asset_dir)
+    t.has_resource_properties("AWS::S3Vectors::VectorBucket", {"VectorBucketName": "wine-cellar-vectors-dev"})
+    t.has_resource_properties(
+        "AWS::S3Vectors::Index",
+        {"IndexName": "wine-text", "DataType": "float32", "Dimension": 1024, "DistanceMetric": "cosine"},
+    )
+
+
+def test_lambda_can_use_vectors_and_only_the_embedding_model(asset_dir):
+    t = _service(asset_dir)
+    t.has_resource_properties(
+        "AWS::IAM::Policy",
+        {
+            "PolicyDocument": {
+                "Statement": Match.array_with(
+                    [
+                        Match.object_like(
+                            {
+                                "Action": Match.array_with(["s3vectors:PutVectors", "s3vectors:QueryVectors"]),
+                                "Resource": {"Fn::GetAtt": [Match.any_value(), "IndexArn"]},
+                            }
+                        ),
+                        Match.object_like(
+                            {
+                                "Action": "bedrock:InvokeModel",
+                                "Resource": "arn:aws:bedrock:us-east-1::foundation-model/"
+                                "amazon.nova-2-multimodal-embeddings-v1:0",
+                            }
+                        ),
+                    ]
+                )
+            }
         },
     )
 

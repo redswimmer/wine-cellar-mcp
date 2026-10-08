@@ -26,8 +26,9 @@ answers is "have I had this wine, and did I like it?"
 | AgentCore Gateway | Not used for now | Needs an OAuth provider (Cognito) for inbound auth and adds cost for a single client. Can front the server later without code changes. |
 | Users | Every record is keyed by our own server-generated user ID (`usr_<ulid>`), never by a chat platform's ID or a username | IDs are generated and never change; each user also has a unique username for people to read and type. Keeps the server independent of Telegram. Each user has one agent sandbox, configured with that user's token. |
 | Storage | DynamoDB on-demand, S3 for photos, S3 Vectors for embeddings | All pay-per-use and serverless. |
-| Label reading | Claude Haiku on Bedrock with vision | Fast and cheap; returns structured fields. |
-| Embeddings | Bedrock multimodal embeddings (Titan Multimodal G1 or Nova Multimodal, chosen in step 3) | Puts label photos and text in the same vector space. |
+| Label reading | Done by the agent, not the server | The agent's own model can read a label photo and pass the producer, name and vintage as text, so the server needs no vision model. Revisit if NemoClaw's model can't read images. |
+| Embeddings | Amazon Nova Multimodal Embeddings on Bedrock (`amazon.nova-2-multimodal-embeddings-v1:0`), 1024 dimensions | One model for wine text and label photos. |
+| Search | Vector search plus the existing fuzzy match, merged by rank (reciprocal rank fusion) | The standard hybrid search pattern. S3 Vectors has no keyword search, so the merge runs in the Lambda. |
 | IaC | AWS CDK in Python | Same language as the service; deploys from GitHub Actions. |
 | Domain | `mcp.wine.redswimmer.com` (prod), `mcp.wine-dev.redswimmer.com` (dev) | `<role>.<service>` leaves room for `api.wine…` or `app.wine…` later. Records live in the existing `redswimmer.com` hosted zone with an ACM certificate per name. |
 
@@ -41,8 +42,9 @@ Telegram ──▶ OpenClaw agent ──HTTPS + bearer──▶ API Gateway (HTT
                                  ┌──────────┬─────────┴──┬──────────┐
                                  ▼          ▼            ▼          ▼
                             DynamoDB   S3 photos    S3 Vectors  Bedrock
-                         (wines and                 (index)    (Claude,
-                          token hashes)                         embeddings)
+                         (wines and               (text and    (Nova
+                          token hashes)            photo        embeddings)
+                                                   indexes)
 ```
 
 ## Data model
@@ -79,8 +81,19 @@ and it avoids running a search cluster.
 
 Photos go to `s3://<bucket>/<user_id>/<wine_id>/<ulid>.jpg`.
 
-S3 Vectors holds one vector per photo and one per wine's text description,
-with `user_id` and `wine_id` as filterable metadata.
+S3 Vectors holds one vector bucket per stage with two indexes, both 1024
+dimensions and cosine distance, and every query filtered to the caller's
+`user_id`:
+
+- `wine-text`: one vector per wine, keyed by `wine_id`. It embeds the label,
+  region, style, grapes, verdict, notes and tasting notes, and is rewritten
+  whenever the wine changes and deleted with it.
+- `wine-photos` (step 3, photos): one vector per photo, with `wine_id` as
+  metadata.
+
+Text and photo vectors are never compared with each other. DynamoDB is the
+source of truth: if a vector write fails the save still succeeds, and
+`uv run wine-tokens --stage dev reindex` rebuilds every wine's text vector.
 
 ## MCP tools
 
@@ -88,33 +101,32 @@ with `user_id` and `wine_id` as filterable metadata.
 | --- | --- |
 | `save_wine` | Create or update a wine with a verdict, rating and notes. Matches an existing wine first so repeats don't create duplicates. |
 | `add_tasting` | Add a dated tasting note and verdict to a wine. |
-| `search_wines` | Text search, e.g. "that Rioja I liked last spring". Returns ranked matches with verdicts and notes. |
-| `check_wine_photo` | Takes a label photo (base64). Reads the label, searches by text and by image, and answers "do I like this?" with the closest matches. Also returns the label fields so the agent can offer to save it. |
+| `search_wines` | Search by text, a label photo, or both, e.g. "that bold red I loved" or a photo plus what the agent read off the label. Returns ranked matches with verdicts and notes. |
+| `add_wine_photo` | Attach a label photo to a wine. A wine can have several. |
 | `list_wines` | Filter by verdict, style, region or varietal. |
 | `get_wine` / `delete_wine` | Fetch or remove one wine. |
 
 No tool takes a user ID. The bearer token identifies the user, so the user is
 fixed by how the sandbox was configured, not by anything the agent says.
 
-Photos arrive base64-encoded in the tool call. NemoClaw's egress policy caps
+Photos arrive base64-encoded in the tool call (`search_wines`, `save_wine`, `add_wine_photo`). NemoClaw's egress policy caps
 an MCP request body at 131,072 bytes, so a photo must be about 90 KB or less
 before encoding. Telegram stores every photo in several sizes, and the ~800 px
 version is usually under that while still readable for label text. The tool
 rejects oversized images with a message telling the agent to send a smaller
-size. If that proves unreliable, `check_wine_photo` can also accept a Telegram
+size. If that proves unreliable, the photo tools can also accept a Telegram
 `file_id` and fetch the photo from the Bot API itself (needs the bot token in
 Secrets Manager).
 
-## Photo lookup flow
+## Search flow
 
-1. Store the photo in S3.
-2. In parallel, ask Claude to read the label (producer, name, vintage, region,
-   style) and create an image embedding.
-3. Gather candidates from fuzzy text matching on the label fields and from a
-   vector query filtered to the user.
-4. Merge and score. A strong producer and name match wins; the vector match
-   catches labels the model misreads.
-5. Return the top matches with verdicts and notes, plus the extracted label.
+1. Text, if given, is embedded and queried against `wine-text`, and also
+   fuzzy-matched against the user's wines as before.
+2. A photo, if given, is embedded and queried against `wine-photos`.
+3. Each search returns its top 10. The lists are merged with reciprocal rank
+   fusion: a wine earns points for its position in each list, and the highest
+   total ranks first.
+4. The top matches come back with verdicts and notes.
 
 ## Security
 
@@ -124,8 +136,8 @@ Secrets Manager).
   cached for 60 seconds per Lambda environment, so a revoked token stops
   working within a minute.
 - API Gateway throttling caps request rate and burst.
-- The Lambda role can reach only its table, bucket, vector index and the
-  Bedrock models it uses.
+- The Lambda role can reach only its table, bucket, vector indexes and the
+  Bedrock embedding model.
 - S3 bucket blocks public access and encrypts at rest.
 
 ## Cost and latency
@@ -172,8 +184,8 @@ last step and needs no server changes.
 1. Project board and this design. (done)
 2. Core MCP service: CDK app, storage, domain, text tools, per-user tokens,
    CI, tested with Claude Code. (done)
-3. Photo and semantic search: label reading, embeddings, `check_wine_photo`,
-   `add_wine_photo`, meaning-based text search. Tested with Claude Code.
+3. Photo and semantic search: vector store and text embeddings, semantic
+   `search_wines`, photos and photo search, then dial-in with Claude Code.
 4. Release to prod: rename to wine-cellar-mcp, e2e tests in the Deploy
    workflow, first prod deploy.
 5. Connect NemoClaw and test end to end from Telegram.

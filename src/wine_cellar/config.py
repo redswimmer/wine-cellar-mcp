@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 class Settings:
     table_name: str
     allowed_hosts: list[str] = field(default_factory=list)
+    vector_bucket: str = ""
+    text_index: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -15,4 +17,6 @@ class Settings:
         return cls(
             table_name=os.environ["TABLE_NAME"],
             allowed_hosts=[h.strip() for h in hosts.split(",") if h.strip()],
+            vector_bucket=os.environ.get("VECTOR_BUCKET", ""),
+            text_index=os.environ.get("TEXT_INDEX", ""),
         )
