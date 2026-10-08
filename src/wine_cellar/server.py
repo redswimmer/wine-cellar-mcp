@@ -14,7 +14,8 @@ from starlette.types import ASGIApp
 
 from .auth import USER_ID_STATE_KEY, BearerAuthMiddleware
 from .models import Style, Verdict, Wine
-from .service import WineNotFoundError, WineService
+from .photos import InvalidPhotoError, Photo, decode_photo
+from .service import PhotosDisabledError, WineNotFoundError, WineService
 
 INSTRUCTIONS = """\
 Remembers which wines the user has tried and what they thought of them.
@@ -22,6 +23,15 @@ Before saving a wine, use search_wines to check whether it is already recorded.
 """
 
 WineId = Annotated[str, Field(description="wine_id returned by another tool")]
+PHOTO_DESCRIPTION = "Label photo as base64 (JPEG, PNG, WebP or GIF), at most 95 KB before encoding"
+PhotoArg = Annotated[str | None, Field(description=PHOTO_DESCRIPTION)]
+
+
+def _photo(photo_base64: str | None) -> Photo | None:
+    try:
+        return decode_photo(photo_base64) if photo_base64 else None
+    except InvalidPhotoError as e:
+        raise ToolError(str(e)) from e
 
 
 def current_user(ctx: Context) -> str:
@@ -36,6 +46,7 @@ def current_user(ctx: Context) -> str:
 
 def _summary(wine: Wine) -> dict[str, Any]:
     data = wine.model_dump(mode="json", exclude={"user_id", "photo_keys"})
+    data["photo_count"] = len(wine.photo_keys)
     data["label"] = wine.label
     return data
 
@@ -56,22 +67,46 @@ def build_server(service: WineService) -> MCPServer:
         verdict: Annotated[Verdict | None, Field(description="How the person felt about it")] = None,
         rating: Annotated[int | None, Field(ge=1, le=5, description="Optional 1-5 score")] = None,
         notes: Annotated[str, Field(description="What the person said about it")] = "",
+        photo: PhotoArg = None,
     ) -> dict[str, Any]:
-        """Record a wine and the person's opinion of it. Updates the existing record if the wine was saved before."""
-        wine, created = service.save_wine(
-            current_user(ctx),
-            producer=producer,
-            name=name,
-            vintage=vintage,
-            region=region,
-            country=country,
-            varietals=varietals,
-            style=style,
-            verdict=verdict,
-            rating=rating,
-            notes=notes,
-        )
+        """Record a wine and the person's opinion of it. Updates the existing record if the wine was saved before.
+
+        Read the producer, name and vintage off the label yourself. Pass the label photo too, if there is one, so the
+        wine can be found from a photo later.
+        """
+        label_photo = _photo(photo)
+        try:
+            wine, created = service.save_wine(
+                current_user(ctx),
+                producer=producer,
+                name=name,
+                vintage=vintage,
+                region=region,
+                country=country,
+                varietals=varietals,
+                style=style,
+                verdict=verdict,
+                rating=rating,
+                notes=notes,
+                photo=label_photo,
+            )
+        except PhotosDisabledError as e:
+            raise ToolError(str(e)) from e
         return {"created": created, "wine": _summary(wine)}
+
+    @mcp.tool()
+    def add_wine_photo(
+        ctx: Context, wine_id: WineId, photo: Annotated[str, Field(description=PHOTO_DESCRIPTION)]
+    ) -> dict[str, Any]:
+        """Attach another label photo to a recorded wine, e.g. the back label or a different vintage's label."""
+        label_photo = _photo(photo)
+        if label_photo is None:
+            raise ToolError("Send a photo")
+        try:
+            wine = service.add_wine_photo(current_user(ctx), wine_id, label_photo)
+        except (WineNotFoundError, PhotosDisabledError) as e:
+            raise ToolError(str(e)) from e
+        return {"wine": _summary(wine)}
 
     @mcp.tool()
     def add_tasting(
@@ -98,17 +133,22 @@ def build_server(service: WineService) -> MCPServer:
             str,
             Field(
                 description="Free text, matched by name and by meaning: a producer or wine, "
-                "or a description like 'that bold red I loved'"
+                "or a description like 'that bold red I loved'. With a photo, pass what the label says."
             ),
-        ],
+        ] = "",
+        photo: PhotoArg = None,
         limit: Annotated[int, Field(ge=1, le=20)] = 5,
     ) -> dict[str, Any]:
         """Find wines the person has recorded, best match first, with their verdicts and notes.
 
-        Matches names (typos and partial names are fine) and meaning, using the person's notes too.
+        Give text, a label photo, or both. Text matches names (typos and partial names are fine) and meaning, using
+        the person's notes too; a photo matches the label photos they saved. For "do I like this wine?" from a photo,
+        send the photo plus the producer, name and vintage you read off the label.
         The closest wines come back even when none is a real match, so check them before relying on one.
         """
-        matches = service.search_wines(current_user(ctx), query, limit=limit)
+        if not query.strip() and not photo:
+            raise ToolError("Give a query, a photo, or both")
+        matches = service.search_wines(current_user(ctx), query, photo=_photo(photo), limit=limit)
         return {"matches": [_summary(w) for w in matches]}
 
     @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))

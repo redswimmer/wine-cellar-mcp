@@ -1,14 +1,16 @@
 """Business logic behind the MCP tools."""
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 
 from ulid import ULID
 
 from . import search
 from .models import Style, Tasting, Verdict, Wine
+from .photos import Photo, PhotoStore
 from .repository import WineRepository
-from .vectors import WineTextIndex
+from .vectors import WinePhotoIndex, WineTextIndex
 
 log = logging.getLogger(__name__)
 
@@ -17,10 +19,32 @@ class WineNotFoundError(LookupError):
     pass
 
 
+def _best_effort[T](action: Callable[[], T], what: str) -> T | None:
+    """Run a vector or photo-storage step that must never fail the request. DynamoDB is the source of truth."""
+    try:
+        return action()
+    except Exception:
+        log.exception("%s failed", what)
+        return None
+
+
+class PhotosDisabledError(RuntimeError):
+    pass
+
+
 class WineService:
-    def __init__(self, repo: WineRepository, text_index: WineTextIndex | None = None) -> None:
+    def __init__(
+        self,
+        repo: WineRepository,
+        text_index: WineTextIndex | None = None,
+        *,
+        photos: PhotoStore | None = None,
+        photo_index: WinePhotoIndex | None = None,
+    ) -> None:
         self._repo = repo
         self._text_index = text_index
+        self._photos = photos
+        self._photo_index = photo_index
 
     def _save(self, wine: Wine) -> None:
         """Store a wine, then refresh its text vector.
@@ -29,12 +53,9 @@ class WineService:
         `wine-tokens reindex` repairs the index.
         """
         self._repo.put(wine)
-        if self._text_index is None:
-            return
-        try:
-            self._text_index.upsert(wine)
-        except Exception:
-            log.exception("Text vector upsert failed for wine %s", wine.wine_id)
+        text_index = self._text_index
+        if text_index is not None:
+            _best_effort(lambda: text_index.upsert(wine), f"Text vector upsert for wine {wine.wine_id}")
 
     def save_wine(
         self,
@@ -50,8 +71,11 @@ class WineService:
         verdict: Verdict | None = None,
         rating: int | None = None,
         notes: str = "",
+        photo: Photo | None = None,
     ) -> tuple[Wine, bool]:
         """Create a wine, or update the matching one. Returns the wine and whether it was new."""
+        if photo is not None and self._photos is None:
+            raise PhotosDisabledError("Photos aren't enabled on this server")
         candidate = Wine(
             wine_id=str(ULID()),
             user_id=user_id,
@@ -69,7 +93,7 @@ class WineService:
         existing = search.find_same_wine(candidate, self._repo.list_for_user(user_id))
         if existing is None:
             self._save(candidate)
-            return candidate, True
+            return (self._attach_photo(candidate, photo) if photo else candidate), True
 
         # Only overwrite fields the caller actually supplied.
         updates = {
@@ -87,7 +111,25 @@ class WineService:
         }
         updated = existing.model_copy(update={**updates, "updated_at": datetime.now(UTC)})
         self._save(updated)
-        return updated, False
+        return (self._attach_photo(updated, photo) if photo else updated), False
+
+    def add_wine_photo(self, user_id: str, wine_id: str, photo: Photo) -> Wine:
+        return self._attach_photo(self.get_wine(user_id, wine_id), photo)
+
+    def _attach_photo(self, wine: Wine, photo: Photo) -> Wine:
+        """Store a label photo, add it to the wine and index it. A failed vector write is logged, as for text."""
+        if self._photos is None:
+            raise PhotosDisabledError("Photos aren't enabled on this server")
+        key = self._photos.put(wine.user_id, wine.wine_id, photo)
+        updated = wine.model_copy(update={"photo_keys": [*wine.photo_keys, key], "updated_at": datetime.now(UTC)})
+        self._repo.put(updated)  # the text vector doesn't describe photos, so it needs no refresh
+        photo_index = self._photo_index
+        if photo_index is not None:
+            _best_effort(
+                lambda: photo_index.upsert(key, photo.data, photo.format, user_id=wine.user_id, wine_id=wine.wine_id),
+                f"Photo vector upsert for {key}",
+            )
+        return updated
 
     def add_tasting(
         self,
@@ -117,28 +159,37 @@ class WineService:
         return wine
 
     def delete_wine(self, user_id: str, wine_id: str) -> None:
+        wine = self.get_wine(user_id, wine_id)
         if not self._repo.delete(user_id, wine_id):
             raise WineNotFoundError(f"No wine {wine_id} for this user")
-        if self._text_index is None:
-            return
-        try:
-            self._text_index.delete(wine_id)
-        except Exception:
-            log.exception("Text vector delete failed for wine %s", wine_id)
+        # The wine is gone either way; anything left behind is only storage, and search ignores it.
+        text_index, photo_index, photos = self._text_index, self._photo_index, self._photos
+        if text_index is not None:
+            _best_effort(lambda: text_index.delete(wine_id), f"Text vector delete for wine {wine_id}")
+        if photo_index is not None:
+            _best_effort(lambda: photo_index.delete(wine.photo_keys), f"Photo vector delete for wine {wine_id}")
+        if photos is not None:
+            _best_effort(lambda: photos.delete(wine.photo_keys), f"Photo delete for wine {wine_id}")
 
-    def search_wines(self, user_id: str, query: str, limit: int = 5) -> list[Wine]:
-        """Best matches first: fuzzy name matching merged with meaning-based matching on the text vectors."""
+    def search_wines(self, user_id: str, query: str = "", photo: Photo | None = None, limit: int = 5) -> list[Wine]:
+        """Best matches first, merging every search that applies by rank (reciprocal rank fusion).
+
+        Text is fuzzy-matched by name and matched by meaning against the text vectors; a photo is matched against
+        the label photo vectors. Text and photos are never compared with each other.
+        """
         wines = {w.wine_id: w for w in self._repo.list_for_user(user_id)}
-        fuzzy = [w.wine_id for w, _ in search.rank(query, list(wines.values()), limit=10)]
-        semantic: list[str] = []
-        if self._text_index is not None:
-            try:
-                semantic = self._text_index.query(user_id, query)
-            except Exception:
-                log.exception("Text vector query failed; using fuzzy matches only")
-        # Vectors can outlive a wine if a delete's vector cleanup failed, so keep only wines that exist.
-        semantic = [wine_id for wine_id in semantic if wine_id in wines]
-        return [wines[wine_id] for wine_id in search.fuse([fuzzy, semantic])[:limit]]
+        text_index, photo_index = self._text_index, self._photo_index
+        rankings: list[list[str]] = []
+        if query.strip():
+            rankings.append([w.wine_id for w, _ in search.rank(query, list(wines.values()), limit=10)])
+            if text_index is not None:
+                rankings.append(_best_effort(lambda: text_index.query(user_id, query), "Text vector query") or [])
+        if photo is not None and photo_index is not None:
+            ranking = _best_effort(lambda: photo_index.query(user_id, photo.data, photo.format), "Photo vector query")
+            rankings.append(ranking or [])
+        # Vectors can outlive a wine if a delete's cleanup failed, so keep only wines that exist.
+        rankings = [[wine_id for wine_id in r if wine_id in wines] for r in rankings]
+        return [wines[wine_id] for wine_id in search.fuse(rankings)[:limit]]
 
     def list_wines(
         self,

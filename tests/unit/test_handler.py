@@ -98,7 +98,15 @@ def test_initialize_and_list_tools(handler):
     status, body = _call(handler, _rpc("tools/list"))
     assert status == 200, body
     names = {t["name"] for t in body["result"]["tools"]}
-    assert names == {"save_wine", "add_tasting", "search_wines", "list_wines", "get_wine", "delete_wine"}
+    assert names == {
+        "save_wine",
+        "add_wine_photo",
+        "add_tasting",
+        "search_wines",
+        "list_wines",
+        "get_wine",
+        "delete_wine",
+    }
 
 
 def test_save_then_search_over_http(handler):
@@ -162,3 +170,18 @@ def test_deactivated_user_is_rejected(table, tokens, monkeypatch):
     handler = importlib.reload(mod).handler
     assert _call(handler, _rpc("tools/list"), token=tokens["sam"])[0] == 401
     assert _call(handler, _rpc("tools/list"), token=tokens["andrew"])[0] == 200
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments", "message"),
+    [
+        ("search_wines", {}, "query, a photo"),
+        ("search_wines", {"photo": "bm90IGFuIGltYWdl"}, "JPEG, PNG"),
+        ("save_wine", {"producer": "Ridge", "photo": "/9j/4AAQ"}, "enabled"),
+    ],
+)
+def test_photo_problems_are_tool_errors(handler, tool, arguments, message):
+    status, body = _call(handler, _rpc("tools/call", {"name": tool, "arguments": arguments}))
+    assert status == 200
+    assert body["result"]["isError"] is True
+    assert message in body["result"]["content"][0]["text"]
