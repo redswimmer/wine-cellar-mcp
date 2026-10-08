@@ -163,16 +163,15 @@ MCP layers without deploying.
 
 ## Build steps
 
-The MCP server is built and tested on its own; agents are consumers of it, so
-connecting one is a separate step.
-
 1. Project board and this design. (done)
 2. Core service: CDK app, storage, domain, text tools, tests, CI. (done)
 3. Image and vector search: label reading, embeddings, `check_wine_photo`,
    `add_wine_photo`.
-4. Secure the MCP endpoint and test it with a real MCP client (Claude Code).
-   (done)
+4. Secure the MCP endpoint and test it with an MCP client (Claude Code). (done)
 5. Connect OpenClaw and test end to end from Telegram.
+
+The MCP service doesn't depend on any one agent. OpenClaw is a client like
+Claude Code, so connecting it is its own step and needs no server changes.
 
 ## Users and tokens
 
@@ -188,6 +187,14 @@ uv run wine-tokens --stage dev list-users
 uv run wine-tokens --stage dev create-token --user andrew --label andrew-laptop
 uv run wine-tokens --stage dev list-tokens
 uv run wine-tokens --stage dev revoke-token <hash-prefix>
+```
+
+`add-user` and `create-token` print the token on stdout and everything else on
+stderr, so redirect only stdout when saving a token to a file:
+
+```
+mkdir -p ~/.config/wine-cellar
+(umask 077; uv run wine-tokens --stage dev create-token --user andrew --label andrew-laptop > ~/.config/wine-cellar/dev-token)
 ```
 
 Users are deactivated, not deleted. Deactivating blocks all of a user's tokens
@@ -208,20 +215,28 @@ act as them; only their token does.
 One sandbox maps to one user. If several people ever share one sandbox, their
 wines would share one user ID; give each person their own sandbox and token.
 
-## Connecting a client
+## Connecting clients
 
-Any MCP client that supports Streamable HTTP with a bearer header can use the
-server. To try it from Claude Code, run this from the repo folder:
+Any MCP client that speaks Streamable HTTP and can send an `Authorization`
+header works. To check a deployment end to end without a client, run
+`uv run python scripts/smoke_test.py` (it reads `~/.config/wine-cellar/dev-token`,
+or `$WINE_MCP_TOKEN`, and cleans up its test wine).
+
+### Claude Code
+
+Add the server in local scope, which keeps the token in `~/.claude.json` and
+out of the repo. Don't use `-s project`; that writes the token to `.mcp.json`.
 
 ```
 claude mcp add --transport http wine https://mcp.wine-dev.redswimmer.com/mcp \
   --header "Authorization: Bearer $(cat ~/.config/wine-cellar/dev-token)"
+claude mcp get wine
 ```
 
-Keep the default local scope. `--scope project` would write the token into
-`.mcp.json` in the repo.
+Start a new `claude` session in the same folder and talk to it normally; it
+picks the tools from their descriptions.
 
-## Connecting OpenClaw
+### OpenClaw
 
 NemoClaw supports remote MCP servers over HTTPS with Streamable HTTP and puts
 the token in the `Authorization` header. The raw token stays in OpenShell's
