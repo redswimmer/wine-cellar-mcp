@@ -34,11 +34,9 @@ def current_user(ctx: Context) -> str:
     return user_id
 
 
-def _summary(wine: Wine, score: float | None = None) -> dict[str, Any]:
+def _summary(wine: Wine) -> dict[str, Any]:
     data = wine.model_dump(mode="json", exclude={"user_id", "photo_keys"})
     data["label"] = wine.label
-    if score is not None:
-        data["match_score"] = round(score, 1)
     return data
 
 
@@ -96,12 +94,22 @@ def build_server(service: WineService) -> MCPServer:
     @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
     def search_wines(
         ctx: Context,
-        query: Annotated[str, Field(description="Free text: producer, wine, vintage, region or grape")],
+        query: Annotated[
+            str,
+            Field(
+                description="Free text, matched by name and by meaning: a producer or wine, "
+                "or a description like 'that bold red I loved'"
+            ),
+        ],
         limit: Annotated[int, Field(ge=1, le=20)] = 5,
     ) -> dict[str, Any]:
-        """Find wines the person has recorded that match free text, best match first, with their verdicts and notes."""
+        """Find wines the person has recorded, best match first, with their verdicts and notes.
+
+        Matches names (typos and partial names are fine) and meaning, using the person's notes too.
+        The closest wines come back even when none is a real match, so check them before relying on one.
+        """
         matches = service.search_wines(current_user(ctx), query, limit=limit)
-        return {"matches": [_summary(w, s) for w, s in matches]}
+        return {"matches": [_summary(w) for w in matches]}
 
     @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
     def list_wines(

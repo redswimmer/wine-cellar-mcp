@@ -6,6 +6,7 @@ import pytest
 
 from wine_cellar.models import Style, Tasting, Verdict, Wine
 from wine_cellar.repository import WineRepository
+from wine_cellar.search import fuse
 from wine_cellar.service import WineService
 from wine_cellar.vectors import EMBEDDING_DIMENSION, EMBEDDING_MODEL_ID, Embedder, WineTextIndex, wine_text
 
@@ -39,6 +40,17 @@ class FakeS3Vectors:
             raise RuntimeError("s3vectors down")
         for k in keys:
             self.vectors.pop(k, None)
+
+    def query_vectors(self, *, vectorBucketName, indexName, topK, queryVector, filter):
+        if self.fail:
+            raise RuntimeError("s3vectors down")
+        self.last_query = {"topK": topK, "filter": filter}
+        # Pretend the closest vectors are whatever `ranking` says, restricted by the user filter.
+        user = filter["user_id"]["$eq"]
+        keys = [k for k in self.ranking if self.vectors.get(k, {}).get("metadata", {}).get("user_id") == user]
+        return {"vectors": [{"key": k} for k in keys[:topK]]}
+
+    ranking: list[str] = []
 
 
 @pytest.fixture
@@ -110,3 +122,42 @@ def test_vector_failures_do_not_lose_the_wine(table, bedrock):
     assert service.get_wine(USER, wine.wine_id).producer == "Ridge"
     service.delete_wine(USER, wine.wine_id)
     assert service.list_wines(USER) == []
+
+
+def test_search_finds_wines_by_meaning_when_names_do_not_match(indexed_service, s3v, bedrock):
+    ridge, _ = indexed_service.save_wine(USER, producer="Ridge", name="Monte Bello", notes="huge, structured")
+    indexed_service.save_wine(USER, producer="Lopez de Heredia", name="Tondonia")
+    s3v.ranking = [ridge.wine_id]
+    results = indexed_service.search_wines(USER, "that bold red I loved")
+    assert [w.wine_id for w in results] == [ridge.wine_id]
+    assert bedrock.bodies[-1]["singleEmbeddingParams"]["embeddingPurpose"] == "TEXT_RETRIEVAL"
+    assert s3v.last_query == {"topK": 10, "filter": {"user_id": {"$eq": USER}}}
+
+
+def test_search_ranks_wines_found_both_ways_first(indexed_service, s3v):
+    a, _ = indexed_service.save_wine(USER, producer="Ridge", name="Monte Bello")
+    b, _ = indexed_service.save_wine(USER, producer="Lopez de Heredia", name="Tondonia")
+    s3v.ranking = [b.wine_id, a.wine_id]
+    # Only fuzzy matching finds Monte Bello; vectors rank Tondonia first but find Monte Bello too.
+    results = indexed_service.search_wines(USER, "ridge monte bello")
+    assert results[0].wine_id == a.wine_id
+
+
+def test_search_ignores_vectors_of_deleted_wines(indexed_service, s3v):
+    wine, _ = indexed_service.save_wine(USER, producer="Ridge")
+    s3v.vectors["gone"] = {"key": "gone", "metadata": {"user_id": USER}}
+    s3v.ranking = ["gone", wine.wine_id]
+    assert [w.wine_id for w in indexed_service.search_wines(USER, "anything")] == [wine.wine_id]
+
+
+def test_search_falls_back_to_names_when_vectors_fail(table, bedrock):
+    s3v = FakeS3Vectors()
+    service = WineService(WineRepository(table), WineTextIndex(s3v, Embedder(bedrock), bucket="vb", index="wine-text"))
+    service.save_wine(USER, producer="Lopez de Heredia", name="Tondonia")
+    s3v.fail = True
+    assert [w.name for w in service.search_wines(USER, "tondonia")] == ["Tondonia"]
+
+
+def test_fuse_rewards_agreement():
+    assert fuse([["a", "b"], ["b", "c"]]) == ["b", "a", "c"]
+    assert fuse([[], ["x"]]) == ["x"]

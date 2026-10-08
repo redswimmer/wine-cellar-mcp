@@ -39,8 +39,8 @@ def test_search_ranks_closest_match_first(service):
     service.save_wine(USER, producer="Ridge", name="Monte Bello", vintage=2019, region="Santa Cruz Mountains")
     service.save_wine(USER, producer="Lopez de Heredia", name="Viña Tondonia", vintage=2010, region="Rioja")
     results = service.search_wines(USER, "tondonia rioja")
-    assert results[0][0].producer == "Lopez de Heredia"
-    assert all(r[0].producer != "Ridge" for r in results)
+    assert results[0].producer == "Lopez de Heredia"
+    assert all(r.producer != "Ridge" for r in results)
 
 
 def test_add_tasting_updates_verdict_and_history(service):
