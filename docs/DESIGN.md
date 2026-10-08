@@ -165,15 +165,18 @@ deployed endpoint; they need a token, so they run by hand for now (see
 
 ## Build steps
 
-1. Project board and this design. (done)
-2. Core service: CDK app, storage, domain, text tools, tests, CI. (done)
-3. Image and vector search: label reading, embeddings, `check_wine_photo`,
-   `add_wine_photo`.
-4. Secure the MCP endpoint and test it with an MCP client (Claude Code). (done)
-5. Connect OpenClaw and test end to end from Telegram.
+The MCP server is built and dialed in with Claude Code as the agent before any
+other client. OpenClaw is a client like Claude Code, so connecting it is the
+last step and needs no server changes.
 
-The MCP service doesn't depend on any one agent. OpenClaw is a client like
-Claude Code, so connecting it is its own step and needs no server changes.
+1. Project board and this design. (done)
+2. Core MCP service: CDK app, storage, domain, text tools, per-user tokens,
+   CI, tested with Claude Code. (done)
+3. Photo and semantic search: label reading, embeddings, `check_wine_photo`,
+   `add_wine_photo`, meaning-based text search. Tested with Claude Code.
+4. Release to prod: rename to wine-cellar-mcp, e2e tests in the Deploy
+   workflow, first prod deploy.
+5. Connect NemoClaw and test end to end from Telegram.
 
 ## Users and tokens
 
