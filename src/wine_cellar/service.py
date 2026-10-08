@@ -1,5 +1,6 @@
 """Business logic behind the MCP tools."""
 
+import logging
 from datetime import UTC, date, datetime
 
 from ulid import ULID
@@ -7,6 +8,9 @@ from ulid import ULID
 from . import search
 from .models import Style, Tasting, Verdict, Wine
 from .repository import WineRepository
+from .vectors import WineTextIndex
+
+log = logging.getLogger(__name__)
 
 
 class WineNotFoundError(LookupError):
@@ -14,8 +18,23 @@ class WineNotFoundError(LookupError):
 
 
 class WineService:
-    def __init__(self, repo: WineRepository) -> None:
+    def __init__(self, repo: WineRepository, text_index: WineTextIndex | None = None) -> None:
         self._repo = repo
+        self._text_index = text_index
+
+    def _save(self, wine: Wine) -> None:
+        """Store a wine, then refresh its text vector.
+
+        DynamoDB is the source of truth, so a failed vector write is logged rather than failing the save;
+        `wine-tokens reindex` repairs the index.
+        """
+        self._repo.put(wine)
+        if self._text_index is None:
+            return
+        try:
+            self._text_index.upsert(wine)
+        except Exception:
+            log.exception("Text vector upsert failed for wine %s", wine.wine_id)
 
     def save_wine(
         self,
@@ -49,7 +68,7 @@ class WineService:
         )
         existing = search.find_same_wine(candidate, self._repo.list_for_user(user_id))
         if existing is None:
-            self._repo.put(candidate)
+            self._save(candidate)
             return candidate, True
 
         # Only overwrite fields the caller actually supplied.
@@ -67,7 +86,7 @@ class WineService:
             if v not in (None, "", [])
         }
         updated = existing.model_copy(update={**updates, "updated_at": datetime.now(UTC)})
-        self._repo.put(updated)
+        self._save(updated)
         return updated, False
 
     def add_tasting(
@@ -88,7 +107,7 @@ class WineService:
         if notes.strip():
             update["notes"] = notes.strip()
         updated = wine.model_copy(update=update)
-        self._repo.put(updated)
+        self._save(updated)
         return updated
 
     def get_wine(self, user_id: str, wine_id: str) -> Wine:
@@ -100,6 +119,12 @@ class WineService:
     def delete_wine(self, user_id: str, wine_id: str) -> None:
         if not self._repo.delete(user_id, wine_id):
             raise WineNotFoundError(f"No wine {wine_id} for this user")
+        if self._text_index is None:
+            return
+        try:
+            self._text_index.delete(wine_id)
+        except Exception:
+            log.exception("Text vector delete failed for wine %s", wine_id)
 
     def search_wines(self, user_id: str, query: str, limit: int = 5) -> list[tuple[Wine, float]]:
         return search.rank(query, self._repo.list_for_user(user_id), limit=limit)
