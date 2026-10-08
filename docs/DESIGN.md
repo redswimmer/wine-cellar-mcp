@@ -157,16 +157,23 @@ to put any branch on dev, or to deploy `main` to prod. GitHub Actions assumes
 an AWS role through OIDC, so there are no long-lived keys. Setup is in
 [DEPLOY.md](DEPLOY.md).
 
-Tests are unit tests only for now. The Lambda handler tests drive the real
-handler with API Gateway events against moto, which covers the HTTP, auth and
-MCP layers without deploying.
+`tests/unit` is what CI runs. The Lambda handler tests drive the real handler
+with API Gateway events against moto, which covers the HTTP, auth and MCP
+layers without deploying. `tests/e2e` holds end-to-end smoke tests against a
+deployed endpoint; they need a token, so they run by hand for now (see
+[Connecting clients](#connecting-clients)).
 
 ## Build steps
 
-1. Project board and this design.
-2. Core service: CDK app, storage, domain, text tools, tests, CI.
-3. Image and vector search: label reading, embeddings, `check_wine_photo`.
-4. Secure the MCP endpoint, connect OpenClaw, test end to end from Telegram.
+1. Project board and this design. (done)
+2. Core service: CDK app, storage, domain, text tools, tests, CI. (done)
+3. Image and vector search: label reading, embeddings, `check_wine_photo`,
+   `add_wine_photo`.
+4. Secure the MCP endpoint and test it with an MCP client (Claude Code). (done)
+5. Connect OpenClaw and test end to end from Telegram.
+
+The MCP service doesn't depend on any one agent. OpenClaw is a client like
+Claude Code, so connecting it is its own step and needs no server changes.
 
 ## Users and tokens
 
@@ -182,6 +189,14 @@ uv run wine-tokens --stage dev list-users
 uv run wine-tokens --stage dev create-token --user andrew --label andrew-laptop
 uv run wine-tokens --stage dev list-tokens
 uv run wine-tokens --stage dev revoke-token <hash-prefix>
+```
+
+`add-user` and `create-token` print the token on stdout and everything else on
+stderr, so redirect only stdout when saving a token to a file:
+
+```
+mkdir -p ~/.config/wine-cellar
+(umask 077; uv run wine-tokens --stage dev create-token --user andrew --label andrew-laptop > ~/.config/wine-cellar/dev-token)
 ```
 
 Users are deactivated, not deleted. Deactivating blocks all of a user's tokens
@@ -202,7 +217,30 @@ act as them; only their token does.
 One sandbox maps to one user. If several people ever share one sandbox, their
 wines would share one user ID; give each person their own sandbox and token.
 
-## Connecting OpenClaw
+## Connecting clients
+
+Any MCP client that speaks Streamable HTTP and can send an `Authorization`
+header works. To check a deployment end to end without a client, run
+`uv run pytest tests/e2e`. These end-to-end tests call the deployed endpoint
+(`$WINE_MCP_URL`, default dev) with the token in `$WINE_MCP_TOKEN` or
+`~/.config/wine-cellar/dev-token`, skip when there is no token, and delete
+their test wine. Plain `uv run pytest` runs only the unit tests.
+
+### Claude Code
+
+Add the server in local scope, which keeps the token in `~/.claude.json` and
+out of the repo. Don't use `-s project`; that writes the token to `.mcp.json`.
+
+```
+claude mcp add --transport http wine https://mcp.wine-dev.redswimmer.com/mcp \
+  --header "Authorization: Bearer $(cat ~/.config/wine-cellar/dev-token)"
+claude mcp get wine
+```
+
+Start a new `claude` session in the same folder and talk to it normally; it
+picks the tools from their descriptions.
+
+### OpenClaw
 
 NemoClaw supports remote MCP servers over HTTPS with Streamable HTTP and puts
 the token in the `Authorization` header. The raw token stays in OpenShell's
