@@ -42,10 +42,10 @@ class TokenStore:
         self._cache: dict[str, tuple[str | None, float]] = {}
 
     def resolve(self, token: str) -> str | None:
-        """The user ID a token acts for, or None if it is unknown or revoked.
+        """The user ID a token acts for, or None if it is unknown, revoked, or its user is inactive.
 
-        Results are cached briefly per Lambda environment, so a revoked token stops working
-        within `cache_seconds`.
+        Results are cached briefly per Lambda environment, so a revoked token or a deactivated
+        user stops working within `cache_seconds`.
         """
         if not token.startswith(TOKEN_PREFIX):
             return None
@@ -55,14 +55,18 @@ class TokenStore:
         if cached and cached[1] > now:
             return cached[0]
         item = self._table.get_item(Key=_key(token_hash)).get("Item")
-        user_id = item["user_id"] if item else None
+        user = self._users.get(item["user_id"]) if item else None
+        user_id = user.user_id if user and user.active else None
         self._cache[token_hash] = (user_id, now + self._cache_seconds)
         return user_id
 
     def create(self, user_id: str, label: str) -> str:
         """Issue a new token for an existing user. The token is returned once and never stored."""
-        if self._users.get(user_id) is None:
+        user = self._users.get(user_id)
+        if user is None:
             raise LookupError(f"No user {user_id!r}; create one with `wine-tokens add-user`")
+        if not user.active:
+            raise ValueError(f"User {user.username!r} is deactivated; reactivate them first")
         token = TOKEN_PREFIX + secrets.token_urlsafe(32)
         self._table.put_item(
             Item={

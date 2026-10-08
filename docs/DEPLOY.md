@@ -83,6 +83,8 @@ unset WINE_MCP_TOKEN
 `list-users` and `list-tokens` show what exists, `revoke-token <hash-prefix>`
 revokes a token within a minute, and `create-token --user <username> --label ...`
 issues a replacement for an existing user (their wines stay put).
+`deactivate-user --user <username>` locks a user out without deleting their
+wines; `reactivate-user` lets them back in with their existing tokens.
 
 ## Deploying a branch to dev
 

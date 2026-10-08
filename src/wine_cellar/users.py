@@ -1,4 +1,8 @@
-"""Users of the service. IDs are generated here and opaque; each user also has a unique username."""
+"""Users of the service. IDs are generated here and opaque; each user also has a unique username.
+
+Users are deactivated rather than deleted: a deactivated user's tokens stop working, but their
+wines are kept and reactivating them restores access with the same tokens.
+"""
 
 import re
 from dataclasses import dataclass
@@ -40,6 +44,12 @@ class User:
     user_id: str
     username: str
     created_at: str
+    active: bool = True
+
+
+def _from_item(user_id: str, item: dict[str, Any]) -> User:
+    # Profiles written before deactivation existed have no `active` attribute and count as active.
+    return User(user_id, item["username"], item.get("created_at", ""), bool(item.get("active", True)))
 
 
 class UserStore:
@@ -67,7 +77,12 @@ class UserStore:
                     {
                         "Put": {
                             "TableName": self._table.name,
-                            "Item": {**_key(user.user_id), "username": username, "created_at": user.created_at},
+                            "Item": {
+                                **_key(user.user_id),
+                                "username": username,
+                                "created_at": user.created_at,
+                                "active": True,
+                            },
                             "ConditionExpression": "attribute_not_exists(pk)",
                         }
                     },
@@ -79,7 +94,7 @@ class UserStore:
 
     def get(self, user_id: str) -> User | None:
         item = self._table.get_item(Key=_key(user_id)).get("Item")
-        return User(user_id, item["username"], item.get("created_at", "")) if item else None
+        return _from_item(user_id, item) if item else None
 
     def find(self, user: str) -> User | None:
         """Look up a user by ID (usr_...) or by username."""
@@ -100,10 +115,22 @@ class UserStore:
         }
         while True:
             resp = self._table.scan(**kwargs)
-            users += [
-                User(i["pk"].removeprefix("USER#"), i["username"], i.get("created_at", ""))
-                for i in resp.get("Items", [])
-            ]
+            users += [_from_item(i["pk"].removeprefix("USER#"), i) for i in resp.get("Items", [])]
             if "LastEvaluatedKey" not in resp:
                 return sorted(users, key=lambda u: u.created_at)
             kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+    def set_active(self, user_id: str, active: bool) -> User:
+        """Deactivate or reactivate a user. Their wines and tokens are left in place."""
+        client = self._table.meta.client
+        try:
+            item = self._table.update_item(
+                Key=_key(user_id),
+                UpdateExpression="SET active = :a, status_changed_at = :t",
+                ConditionExpression="attribute_exists(pk)",
+                ExpressionAttributeValues={":a": active, ":t": datetime.now(UTC).isoformat(timespec="seconds")},
+                ReturnValues="ALL_NEW",
+            )["Attributes"]
+        except client.exceptions.ConditionalCheckFailedException as e:
+            raise LookupError(f"No user {user_id!r}") from e
+        return _from_item(user_id, item)

@@ -149,3 +149,16 @@ def test_token_decides_the_user(handler, tokens):
     assert mine["result"]["structuredContent"]["total"] == 1
     _, theirs = _call(handler, listing, token=tokens["sam"])
     assert theirs["result"]["structuredContent"]["total"] == 0
+
+
+def test_deactivated_user_is_rejected(table, tokens, monkeypatch):
+    sam = UserStore(table).find("sam")
+    assert sam is not None
+    UserStore(table).set_active(sam.user_id, False)
+    monkeypatch.setenv("TABLE_NAME", table.name)
+    monkeypatch.setenv("ALLOWED_HOSTS", HOST)
+    import wine_cellar.handler as mod
+
+    handler = importlib.reload(mod).handler
+    assert _call(handler, _rpc("tools/list"), token=tokens["sam"])[0] == 401
+    assert _call(handler, _rpc("tools/list"), token=tokens["andrew"])[0] == 200

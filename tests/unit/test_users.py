@@ -44,3 +44,29 @@ def test_profile_does_not_appear_as_a_wine(table):
     service = WineService(WineRepository(table))
     service.save_wine(user.user_id, producer="Ridge")
     assert [w.producer for w in service.list_wines(user.user_id)] == ["Ridge"]
+
+
+def test_deactivate_and_reactivate_keep_wines(table):
+    store = UserStore(table)
+    user = store.create("andrew")
+    service = WineService(WineRepository(table))
+    service.save_wine(user.user_id, producer="Ridge")
+
+    assert store.set_active(user.user_id, False).active is False
+    assert store.find("andrew") == store.get(user.user_id)
+    assert [u.active for u in store.list()] == [False]
+    assert [w.producer for w in service.list_wines(user.user_id)] == ["Ridge"]
+
+    assert store.set_active(user.user_id, True).active is True
+
+
+def test_set_active_unknown_user(table):
+    with pytest.raises(LookupError):
+        UserStore(table).set_active("usr_missing", False)
+
+
+def test_profiles_without_active_flag_count_as_active(table):
+    user = UserStore(table).create("andrew")
+    table.update_item(Key={"pk": f"USER#{user.user_id}", "sk": "PROFILE"}, UpdateExpression="REMOVE active")
+    fetched = UserStore(table).get(user.user_id)
+    assert fetched is not None and fetched.active

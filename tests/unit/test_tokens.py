@@ -65,3 +65,26 @@ def test_list_and_revoke_by_prefix(table, andrew):
     revoked = store.revoke(records[0].token_hash[:12])
     assert [r.user_id for r in store.list()] == [r.user_id for r in records[1:]]
     assert revoked.token_hash == records[0].token_hash
+
+
+def test_deactivated_user_tokens_stop_working_and_come_back(table, andrew):
+    clock = FakeClock()
+    users = UserStore(table)
+    lambda_view = TokenStore(table, cache_seconds=60, clock=clock)
+    token = TokenStore(table).create(andrew, "andrew-claw")
+    assert lambda_view.resolve(token) == andrew
+
+    users.set_active(andrew, False)
+    clock.now = 61
+    assert lambda_view.resolve(token) is None
+    assert [r.user_id for r in TokenStore(table).list()] == [andrew]  # token kept
+
+    users.set_active(andrew, True)
+    clock.now = 122
+    assert lambda_view.resolve(token) == andrew
+
+
+def test_no_new_tokens_for_deactivated_user(table, andrew):
+    UserStore(table).set_active(andrew, False)
+    with pytest.raises(ValueError):
+        TokenStore(table).create(andrew, "label")
