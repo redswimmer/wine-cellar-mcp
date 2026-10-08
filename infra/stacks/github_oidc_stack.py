@@ -13,7 +13,7 @@ class GithubOidcStack(Stack):
         scope: Construct,
         construct_id: str,
         *,
-        repo: str,
+        sub_prefix: str,
         environments: list[str],
         existing_provider_arn: str | None = None,
         **kwargs,
@@ -37,9 +37,11 @@ class GithubOidcStack(Stack):
             assumed_by=iam.WebIdentityPrincipal(
                 provider.open_id_connect_provider_arn,
                 conditions={
-                    "StringEquals": {f"{GITHUB_ISSUER}:aud": "sts.amazonaws.com"},
                     # Only workflow jobs bound to these GitHub environments can deploy.
-                    "StringLike": {f"{GITHUB_ISSUER}:sub": [f"repo:{repo}:environment:{e}" for e in environments]},
+                    "StringEquals": {
+                        f"{GITHUB_ISSUER}:aud": "sts.amazonaws.com",
+                        f"{GITHUB_ISSUER}:sub": [f"{sub_prefix}:environment:{e}" for e in environments],
+                    },
                 },
             ),
         )

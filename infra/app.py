@@ -5,6 +5,7 @@ Context (cdk.json or -c):
   zoneName       defaults to redswimmer.com
   lambdaAsset    built Lambda package directory, defaults to build/lambda
   oidcProviderArn  existing GitHub OIDC provider in the account, if there is one
+  githubSubPrefix  OIDC subject prefix, if the repo's differs from GITHUB_SUB_PREFIX
 """
 
 import os
@@ -15,7 +16,10 @@ from infra.stacks.github_oidc_stack import GithubOidcStack
 from infra.stacks.service_stack import DomainConfig, ServiceConfig, WineCellarServiceStack
 
 DOMAINS = {"dev": "mcp.wine-dev.redswimmer.com", "prod": "mcp.wine.redswimmer.com"}
-REPO = "redswimmer/wine-cellar-service"
+# The repo uses GitHub's immutable OIDC subjects, which pin owner and repo by ID
+# (`gh api repos/redswimmer/wine-cellar-service/actions/oidc/customization/sub` shows the prefix).
+# A renamed or re-created repo with the same name can't assume the deploy role.
+GITHUB_SUB_PREFIX = "repo:redswimmer@38088099/wine-cellar-service@1410527756"
 
 
 def main() -> None:
@@ -41,7 +45,7 @@ def main() -> None:
         app,
         "WineCellar-GithubOidc",
         env=env,
-        repo=REPO,
+        sub_prefix=app.node.try_get_context("githubSubPrefix") or GITHUB_SUB_PREFIX,
         environments=list(DOMAINS),
         existing_provider_arn=app.node.try_get_context("oidcProviderArn"),
     )
