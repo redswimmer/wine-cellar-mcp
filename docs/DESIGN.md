@@ -24,7 +24,7 @@ answers is "have I had this wine, and did I like it?"
 | Hosting | API Gateway HTTP API in front of one Python Lambda (arm64) | Cheapest managed HTTPS front door with custom domains and throttling. |
 | Auth | One API token per user, issued with the `wine-tokens` CLI; only its SHA-256 hash is stored in DynamoDB | The token decides the user, so agents never pass a user ID and can't act for anyone else. No sign-in flow needed. |
 | AgentCore Gateway | Not used for now | Needs an OAuth provider (Cognito) for inbound auth and adds cost for a single client. Can front the server later without code changes. |
-| Users | Every record is keyed by our own server-generated user ID (`usr_<ulid>`), never by a chat platform's ID or a name | IDs are unique and can't collide; names are labels only. Keeps the server independent of Telegram. Each user has one agent sandbox, configured with that user's token. |
+| Users | Every record is keyed by our own server-generated user ID (`usr_<ulid>`), never by a chat platform's ID or a username | IDs are generated and never change; each user also has a unique username for people to read and type. Keeps the server independent of Telegram. Each user has one agent sandbox, configured with that user's token. |
 | Storage | DynamoDB on-demand, S3 for photos, S3 Vectors for embeddings | All pay-per-use and serverless. |
 | Label reading | Claude Haiku on Bedrock with vision | Fast and cheap; returns structured fields. |
 | Embeddings | Bedrock multimodal embeddings (Titan Multimodal G1 or Nova Multimodal, chosen in step 3) | Puts label photos and text in the same vector space. |
@@ -52,9 +52,12 @@ One DynamoDB table, on-demand billing.
 | Key | Value |
 | --- | --- |
 | `pk` | `USER#<user_id>` |
-| `sk` | `PROFILE` for the user's profile (name, created), `WINE#<wine_id>` (ULID) for each wine |
+| `sk` | `PROFILE` for the user's profile (username, created), `WINE#<wine_id>` (ULID) for each wine |
 
 Token items use `pk` `TOKEN#<sha256>` and `sk` `TOKEN`, and hold the user ID and a label.
+Username items use `pk` `USERNAME#<username>` and `sk` `USERNAME`, and hold the
+user ID. The profile and username items are written in one transaction with
+`attribute_not_exists` conditions, so a username can only be taken once.
 
 Wine item attributes:
 
@@ -168,13 +171,15 @@ MCP layers without deploying.
 ## Users and tokens
 
 The server generates every user ID (`usr_` plus a ULID), so IDs are unique
-and never chosen by hand. The name is a label for humans; two users can share
-a name without colliding. A token can only be issued for a user that exists.
+and never chosen by hand. Each user also has a unique username (lowercase
+`a-z`, `0-9`, `_`, `-`) so it's clear who is who; the CLI accepts either. The
+ID stays the key for their data. A token can only be issued for a user that
+exists.
 
 ```
-uv run wine-tokens --stage dev add-user --name Andrew --label andrew-nemoclaw   # prints the first token
+uv run wine-tokens --stage dev add-user --username andrew --label andrew-nemoclaw   # prints the first token
 uv run wine-tokens --stage dev list-users
-uv run wine-tokens --stage dev create-token --user usr_... --label andrew-laptop
+uv run wine-tokens --stage dev create-token --user andrew --label andrew-laptop
 uv run wine-tokens --stage dev list-tokens
 uv run wine-tokens --stage dev revoke-token <hash-prefix>
 ```
@@ -192,7 +197,7 @@ the token in the `Authorization` header. The raw token stays in OpenShell's
 provider store; the agent config holds only a placeholder:
 
 ```
-export WINE_MCP_TOKEN=$(uv run wine-tokens --stage prod add-user --name Andrew --label andrew-nemoclaw)
+export WINE_MCP_TOKEN=$(uv run wine-tokens --stage prod add-user --username andrew --label andrew-nemoclaw)
 nemoclaw <sandbox> mcp add wine --url https://mcp.wine.redswimmer.com/mcp --env WINE_MCP_TOKEN
 unset WINE_MCP_TOKEN
 ```

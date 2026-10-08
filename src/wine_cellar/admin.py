@@ -24,13 +24,13 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     add_user = sub.add_parser("add-user", help="Create a user and their first token; prints the token once")
-    add_user.add_argument("--name", required=True, help="Who this is, e.g. Andrew (a label only)")
+    add_user.add_argument("--username", required=True, help="Unique username, e.g. andrew")
     add_user.add_argument("--label", required=True, help="Where the token is used, e.g. andrew-nemoclaw")
 
-    sub.add_parser("list-users", help="List users (ID, name, created)")
+    sub.add_parser("list-users", help="List users (ID, username, created)")
 
     create = sub.add_parser("create-token", help="Issue another token for an existing user; prints it once")
-    create.add_argument("--user", required=True, help="User ID from list-users, e.g. usr_01j...")
+    create.add_argument("--user", required=True, help="Username or user ID (usr_...)")
     create.add_argument("--label", required=True, help="Where the token is used")
 
     sub.add_parser("list-tokens", help="List tokens (hash prefix, user, label, created)")
@@ -44,17 +44,22 @@ def main(argv: list[str] | None = None) -> int:
     users, tokens = UserStore(table), TokenStore(table)
 
     if args.command == "add-user":
-        user = users.create(args.name)
+        user = users.create(args.username)
         print(tokens.create(user.user_id, args.label))
-        print(f"Created {user.name} as {user.user_id}. The token above is not stored; save it now.", file=sys.stderr)
+        print(
+            f"Created {user.username} as {user.user_id}. The token above is not stored; save it now.", file=sys.stderr
+        )
     elif args.command == "list-users":
         for u in users.list():
-            print(f"{u.user_id}  {u.name:<24} {u.created_at}")
+            print(f"{u.user_id}  {u.username:<24} {u.created_at}")
     elif args.command == "create-token":
-        print(tokens.create(args.user, args.label))
-        print(f"Token for {args.user} ({args.label}). It is not stored; save it now.", file=sys.stderr)
+        user = users.find(args.user)
+        if user is None:
+            parser.error(f"No user {args.user!r}; see list-users")
+        print(tokens.create(user.user_id, args.label))
+        print(f"Token for {user.username} ({args.label}). It is not stored; save it now.", file=sys.stderr)
     elif args.command == "list-tokens":
-        names = {u.user_id: u.name for u in users.list()}
+        names = {u.user_id: u.username for u in users.list()}
         for r in tokens.list():
             print(f"{r.token_hash[:12]}  {r.user_id}  {names.get(r.user_id, '?'):<16} {r.label:<28} {r.created_at}")
     elif args.command == "revoke-token":

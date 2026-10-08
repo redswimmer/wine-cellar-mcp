@@ -14,7 +14,7 @@ class FakeClock:
 
 @pytest.fixture
 def andrew(table):
-    return UserStore(table).create("Andrew").user_id
+    return UserStore(table).create("andrew").user_id
 
 
 def test_create_resolves_to_user_and_stores_only_a_hash(table, andrew):
@@ -54,7 +54,7 @@ def test_revoke_takes_effect_after_cache_expiry_elsewhere(table, andrew):
 
 
 def test_list_and_revoke_by_prefix(table, andrew):
-    sam = UserStore(table).create("Sam").user_id
+    sam = UserStore(table).create("sam").user_id
     store = TokenStore(table)
     store.create(andrew, "a")
     store.create(sam, "b")
