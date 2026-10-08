@@ -52,7 +52,7 @@ One DynamoDB table, on-demand billing.
 | Key | Value |
 | --- | --- |
 | `pk` | `USER#<user_id>` |
-| `sk` | `PROFILE` for the user's profile (username, created), `WINE#<wine_id>` (ULID) for each wine |
+| `sk` | `PROFILE` for the user's profile (username, active flag, created), `WINE#<wine_id>` (ULID) for each wine |
 
 Token items use `pk` `TOKEN#<sha256>` and `sk` `TOKEN`, and hold the user ID and a label.
 Username items use `pk` `USERNAME#<username>` and `sk` `USERNAME`, and hold the
@@ -183,6 +183,18 @@ uv run wine-tokens --stage dev create-token --user andrew --label andrew-laptop
 uv run wine-tokens --stage dev list-tokens
 uv run wine-tokens --stage dev revoke-token <hash-prefix>
 ```
+
+Users are deactivated, not deleted. Deactivating blocks all of a user's tokens
+within a minute (the auth check also requires an active user) but keeps their
+wines and tokens, so reactivating restores access with no new token:
+
+```
+uv run wine-tokens --stage dev deactivate-user --user andrew
+uv run wine-tokens --stage dev reactivate-user --user andrew
+```
+
+New tokens can't be issued for a deactivated user. Permanent deletion isn't
+supported yet; if it's ever needed it should only apply to deactivated users.
 
 The user ID is never sent by the client. Knowing someone's ID doesn't let you
 act as them; only their token does.

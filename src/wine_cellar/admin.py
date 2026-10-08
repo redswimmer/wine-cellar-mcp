@@ -27,7 +27,14 @@ def main(argv: list[str] | None = None) -> int:
     add_user.add_argument("--username", required=True, help="Unique username, e.g. andrew")
     add_user.add_argument("--label", required=True, help="Where the token is used, e.g. andrew-nemoclaw")
 
-    sub.add_parser("list-users", help="List users (ID, username, created)")
+    sub.add_parser("list-users", help="List users (ID, username, status, created)")
+
+    for name, help_text in [
+        ("deactivate-user", "Block a user's tokens; their wines and tokens are kept"),
+        ("reactivate-user", "Let a deactivated user's existing tokens work again"),
+    ]:
+        p = sub.add_parser(name, help=help_text)
+        p.add_argument("--user", required=True, help="Username or user ID (usr_...)")
 
     create = sub.add_parser("create-token", help="Issue another token for an existing user; prints it once")
     create.add_argument("--user", required=True, help="Username or user ID (usr_...)")
@@ -51,7 +58,14 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.command == "list-users":
         for u in users.list():
-            print(f"{u.user_id}  {u.username:<24} {u.created_at}")
+            print(f"{u.user_id}  {u.username:<24} {'active' if u.active else 'deactivated':<12} {u.created_at}")
+    elif args.command in ("deactivate-user", "reactivate-user"):
+        user = users.find(args.user)
+        if user is None:
+            parser.error(f"No user {args.user!r}; see list-users")
+        user = users.set_active(user.user_id, args.command == "reactivate-user")
+        state = "active" if user.active else "deactivated (takes effect within a minute)"
+        print(f"{user.username} ({user.user_id}) is now {state}.")
     elif args.command == "create-token":
         user = users.find(args.user)
         if user is None:
