@@ -163,10 +163,16 @@ MCP layers without deploying.
 
 ## Build steps
 
-1. Project board and this design.
-2. Core service: CDK app, storage, domain, text tools, tests, CI.
-3. Image and vector search: label reading, embeddings, `check_wine_photo`.
-4. Secure the MCP endpoint, connect OpenClaw, test end to end from Telegram.
+The MCP server is built and tested on its own; agents are consumers of it, so
+connecting one is a separate step.
+
+1. Project board and this design. (done)
+2. Core service: CDK app, storage, domain, text tools, tests, CI. (done)
+3. Image and vector search: label reading, embeddings, `check_wine_photo`,
+   `add_wine_photo`.
+4. Secure the MCP endpoint and test it with a real MCP client (Claude Code).
+   (done)
+5. Connect OpenClaw and test end to end from Telegram.
 
 ## Users and tokens
 
@@ -201,6 +207,19 @@ act as them; only their token does.
 
 One sandbox maps to one user. If several people ever share one sandbox, their
 wines would share one user ID; give each person their own sandbox and token.
+
+## Connecting a client
+
+Any MCP client that supports Streamable HTTP with a bearer header can use the
+server. To try it from Claude Code, run this from the repo folder:
+
+```
+claude mcp add --transport http wine https://mcp.wine-dev.redswimmer.com/mcp \
+  --header "Authorization: Bearer $(cat ~/.config/wine-cellar/dev-token)"
+```
+
+Keep the default local scope. `--scope project` would write the token into
+`.mcp.json` in the repo.
 
 ## Connecting OpenClaw
 
