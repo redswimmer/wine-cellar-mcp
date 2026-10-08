@@ -92,8 +92,14 @@ Every tool takes `telegram_user_id`. The claw passes the ID of the person it
 is talking to. The bearer token proves the caller is the claw, and the claw
 is trusted to pass the right ID; Telegram itself limits who can reach the bot.
 
-Photos arrive base64-encoded in the tool call. Telegram's compressed photos
-are a few hundred KB, well under the Lambda's 6 MB payload limit.
+Photos arrive base64-encoded in the tool call. NemoClaw's egress policy caps
+an MCP request body at 131,072 bytes, so a photo must be about 90 KB or less
+before encoding. Telegram stores every photo in several sizes, and the ~800 px
+version is usually under that while still readable for label text. The tool
+rejects oversized images with a message telling the agent to send a smaller
+size. If that proves unreliable, `check_wine_photo` can also accept a Telegram
+`file_id` and fetch the photo from the Bot API itself (needs the bot token in
+SSM).
 
 ## Photo lookup flow
 
@@ -147,10 +153,21 @@ prod deploys from a manually approved workflow.
 3. Image and vector search: label reading, embeddings, `check_wine_photo`.
 4. Secure the MCP endpoint, connect OpenClaw, test end to end from Telegram.
 
-## Open questions
+## Connecting OpenClaw
 
-- Does the OpenClaw MCP client support custom auth headers per server? If not,
-  we'll pass the token as a query parameter over HTTPS instead.
-- Which AWS account and region? Default: the account that holds
-  `redswimmer.com`, region `us-east-1` (S3 Vectors and the Bedrock models are
-  available there).
+NemoClaw supports remote MCP servers over HTTPS with Streamable HTTP and puts
+the token in the `Authorization` header. The raw token stays in OpenShell's
+provider store; the agent config holds only a placeholder:
+
+```
+export WINE_MCP_TOKEN=...   # from SSM, never committed
+nemoclaw <sandbox> mcp add wine --url https://mcp.wine.redswimmer.com/mcp --env WINE_MCP_TOKEN
+unset WINE_MCP_TOKEN
+```
+
+NemoClaw rejects URLs with query strings, so the token can only go in the
+header. That matches the bearer check above.
+
+## Environment
+
+- Region: `us-east-1`, in the AWS account that holds `redswimmer.com`.
