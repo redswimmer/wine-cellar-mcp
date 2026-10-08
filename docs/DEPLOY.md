@@ -70,18 +70,19 @@ instead of failing.
 
 The workflow summary shows the stack outputs, including `McpUrl`.
 
-Issue a token for each user (each user's agent sandbox gets its own). It is
-printed once and only its hash is stored, so put it straight into the sandbox:
+Add each user once. `add-user` generates their ID (`usr_...`, shown on
+stderr) and prints their first token. The token is printed once and only its
+hash is stored, so put it straight into that user's sandbox:
 
 ```
-export WINE_MCP_TOKEN=$(uv run wine-tokens --stage dev create --user andrew --label andrew-nemoclaw)
+export WINE_MCP_TOKEN=$(uv run wine-tokens --stage dev add-user --name Andrew --label andrew-nemoclaw)
 nemoclaw <sandbox> mcp add wine --url https://mcp.wine-dev.redswimmer.com/mcp --env WINE_MCP_TOKEN
 unset WINE_MCP_TOKEN
 ```
 
-`uv run wine-tokens --stage dev list` shows existing tokens and
-`uv run wine-tokens --stage dev revoke <hash-prefix>` revokes one within a
-minute. If a token is lost, revoke it and issue a new one.
+`list-users` and `list-tokens` show what exists, `revoke-token <hash-prefix>`
+revokes a token within a minute, and `create-token --user usr_... --label ...`
+issues a replacement for an existing user (their wines stay put).
 
 ## Deploying a branch to dev
 

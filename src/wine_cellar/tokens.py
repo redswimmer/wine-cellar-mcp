@@ -6,15 +6,15 @@ so a plain hash is enough to make the stored form useless to someone reading the
 """
 
 import hashlib
-import re
 import secrets
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from .users import UserStore
+
 TOKEN_PREFIX = "wct_"
-USER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 def hash_token(token: str) -> str:
@@ -36,6 +36,7 @@ class TokenRecord:
 class TokenStore:
     def __init__(self, table: Any, *, cache_seconds: float = 60, clock=time.monotonic) -> None:
         self._table = table
+        self._users = UserStore(table)
         self._cache_seconds = cache_seconds
         self._clock = clock
         self._cache: dict[str, tuple[str | None, float]] = {}
@@ -59,9 +60,9 @@ class TokenStore:
         return user_id
 
     def create(self, user_id: str, label: str) -> str:
-        """Issue a new token for a user. The token is returned once and never stored."""
-        if not USER_ID_PATTERN.match(user_id):
-            raise ValueError("user_id must be 1-64 chars of a-z, 0-9, '_' or '-', starting with a letter or digit")
+        """Issue a new token for an existing user. The token is returned once and never stored."""
+        if self._users.get(user_id) is None:
+            raise LookupError(f"No user {user_id!r}; create one with `wine-tokens add-user`")
         token = TOKEN_PREFIX + secrets.token_urlsafe(32)
         self._table.put_item(
             Item={

@@ -6,6 +6,7 @@ import json
 import pytest
 
 from wine_cellar.tokens import TokenStore
+from wine_cellar.users import UserStore
 
 HOST = "mcp.wine-dev.redswimmer.com"
 TOKEN = ""  # set per test by the handler fixture
@@ -13,8 +14,8 @@ TOKEN = ""  # set per test by the handler fixture
 
 @pytest.fixture
 def tokens(table):
-    store = TokenStore(table)
-    return {"andrew": store.create("andrew", "andrew-claw"), "sam": store.create("sam", "sam-claw")}
+    users, store = UserStore(table), TokenStore(table)
+    return {name: store.create(users.create(name).user_id, f"{name}-claw") for name in ("andrew", "sam")}
 
 
 @pytest.fixture
