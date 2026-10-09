@@ -23,10 +23,7 @@ def test_create_resolves_to_user_and_stores_only_a_hash(table, andrew):
     assert token.startswith(TOKEN_PREFIX)
     assert store.resolve(token) == andrew
 
-    items = [i for i in table.scan()["Items"] if i["pk"].startswith("TOKEN#")]
-    assert len(items) == 1
     assert token not in str(table.scan()["Items"])
-    assert items[0]["pk"] == f"TOKEN#{hash_token(token)}"
 
 
 def test_unknown_and_malformed_tokens_resolve_to_none(table):

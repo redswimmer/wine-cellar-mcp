@@ -68,7 +68,8 @@ error means it's time to run `aws sso login` again.
      `uv run wine-tokens --stage dev add-user --username ci --label github-e2e`
 
 Until `AWS_DEPLOY_ROLE_ARN` is set, the deploy job skips with a warning
-instead of failing; likewise the e2e job skips until `WINE_MCP_TOKEN` is set.
+instead of failing. The e2e job fails if `WINE_MCP_TOKEN` is missing, so a
+removed secret can't let the tests pass without running.
 
 ## After a deploy
 

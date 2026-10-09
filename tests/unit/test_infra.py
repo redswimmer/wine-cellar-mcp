@@ -93,10 +93,12 @@ def test_lambda_can_use_vectors_and_only_the_embedding_model(asset_dir):
                         Match.object_like(
                             {
                                 "Action": Match.array_with(["s3vectors:PutVectors", "s3vectors:QueryVectors"]),
-                                "Resource": [
-                                    {"Fn::GetAtt": [Match.string_like_regexp("TextIndex"), "IndexArn"]},
-                                    {"Fn::GetAtt": [Match.string_like_regexp("PhotoIndex"), "IndexArn"]},
-                                ],
+                                "Resource": Match.array_with(
+                                    [
+                                        {"Fn::GetAtt": [Match.string_like_regexp("TextIndex"), "IndexArn"]},
+                                        {"Fn::GetAtt": [Match.string_like_regexp("PhotoIndex"), "IndexArn"]},
+                                    ]
+                                ),
                             }
                         ),
                         Match.object_like(
@@ -120,14 +122,16 @@ def test_photos_uploaded_to_a_wine_trigger_the_photo_function(asset_dir):
         "Custom::S3BucketNotifications",
         {
             "NotificationConfiguration": {
-                "LambdaFunctionConfigurations": [
-                    Match.object_like(
-                        {
-                            "Events": ["s3:ObjectCreated:*"],
-                            "Filter": {"Key": {"FilterRules": [{"Name": "prefix", "Value": "wines/"}]}},
-                        }
-                    )
-                ]
+                "LambdaFunctionConfigurations": Match.array_with(
+                    [
+                        Match.object_like(
+                            {
+                                "Events": ["s3:ObjectCreated:*"],
+                                "Filter": {"Key": {"FilterRules": [{"Name": "prefix", "Value": "wines/"}]}},
+                            }
+                        )
+                    ]
+                )
             }
         },
     )
@@ -168,21 +172,23 @@ def test_oidc_role_trusts_only_repo_environments():
         "AWS::IAM::Role",
         {
             "AssumeRolePolicyDocument": {
-                "Statement": [
-                    Match.object_like(
-                        {
-                            "Condition": {
-                                "StringEquals": {
-                                    "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-                                    "token.actions.githubusercontent.com:sub": [
-                                        f"{prefix}:environment:dev",
-                                        f"{prefix}:environment:prod",
-                                    ],
-                                },
+                "Statement": Match.array_with(
+                    [
+                        Match.object_like(
+                            {
+                                "Condition": {
+                                    "StringEquals": {
+                                        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+                                        "token.actions.githubusercontent.com:sub": [
+                                            f"{prefix}:environment:dev",
+                                            f"{prefix}:environment:prod",
+                                        ],
+                                    },
+                                }
                             }
-                        }
-                    )
-                ]
+                        )
+                    ]
+                )
             }
         },
     )

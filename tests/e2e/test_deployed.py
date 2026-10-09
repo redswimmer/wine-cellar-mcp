@@ -1,13 +1,14 @@
 """Smoke tests for a deployed endpoint: auth, the tool list, list paging, save/search/get/delete round trips."""
 
 import asyncio
-import json
-from contextlib import asynccontextmanager
+import time
 from pathlib import Path
 
 import pytest
 from mcp import ClientSession
-from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
+from mcp.client.streamable_http import create_mcp_http_client
+
+from .conftest import NAME, call, session
 
 pytestmark = pytest.mark.anyio
 
@@ -23,7 +24,6 @@ EXPECTED_TOOLS = {
     "delete_wine",
 }
 LABEL = Path(__file__).with_name("label.jpg")
-NAME = "Smoke Test Cellars Red"
 TEST_WINE = {"name": NAME, "vintage": 2020, "verdict": "like"}
 INITIALIZE = {
     "jsonrpc": "2.0",
@@ -33,26 +33,17 @@ INITIALIZE = {
 }
 
 
-@asynccontextmanager
-async def session(url: str, token: str):
-    async with (
-        create_mcp_http_client(headers={"Authorization": f"Bearer {token}"}) as http,
-        streamable_http_client(url, http_client=http) as (read, write, *_),
-        ClientSession(read, write) as s,
-    ):
-        await s.initialize()
-        yield s
-
-
-async def call(s: ClientSession, tool: str, args: dict) -> dict:
-    result = await s.call_tool(tool, args)
-    text = "".join(getattr(c, "text", "") for c in result.content)
-    assert not result.is_error, f"{tool} failed: {text}"
-    return result.structured_content or json.loads(text)
-
-
 async def search_ids(s: ClientSession, query: str) -> list[str]:
-    return [m["wine_id"] for m in (await call(s, "search_wines", {"query": query}))["matches"]]
+    return [m["wine_id"] for m in (await call(s, "search_wines", {"query": query, "limit": 20}))["matches"]]
+
+
+async def eventually(check, what: str, seconds: int = 20) -> None:
+    """Retry an async check until it returns true. S3 events and indexing finish a few seconds after the call."""
+    deadline = time.monotonic() + seconds
+    while not await check():
+        if time.monotonic() > deadline:
+            pytest.fail(f"{what} didn't happen within {seconds}s")
+        await asyncio.sleep(1)
 
 
 @pytest.mark.parametrize("auth", [None, "Bearer wct_bogus"], ids=["no-token", "bogus-token"])
@@ -84,13 +75,32 @@ async def test_create_update_search_delete_round_trip(url, token):
         assert wine_id not in await search_ids(s, NAME)
 
 
+async def test_search_by_notes_uses_the_text_vectors(url, token):
+    # Name matching only reads the name, vintage and varietal, so only the text vectors can find a phrase in the notes.
+    notes = "Smoked cherries and pipe tobacco, served at the lake house"
+    async with session(url, token) as s:
+        wine_id = (await call(s, "create_wine", {"name": NAME, "notes": notes}))["wine"]["wine_id"]
+        try:
+
+            async def found() -> bool:
+                return wine_id in await search_ids(s, "smoky cherry and tobacco wine from the lake house")
+
+            await eventually(found, "finding the wine by its notes")
+        finally:
+            await call(s, "delete_wine", {"wine_id": wine_id})
+
+
 async def test_list_pages_with_next_token(url, token):
     async with session(url, token) as s:
-        ids = [(await call(s, "create_wine", {"name": f"{NAME} {i}"}))["wine"]["wine_id"] for i in range(3)]
+        created = [(await call(s, "create_wine", {"name": f"{NAME} {i}"}))["wine"] for i in range(3)]
+        ids = [w["wine_id"] for w in created]
+        since = {"created_after": created[0]["created_at"]}  # so other wines of the test user don't get in the way
         try:
             seen, next_token = [], None
             for _ in ids:
-                page = await call(s, "list_wines", {"limit": 1} | ({"next_token": next_token} if next_token else {}))
+                page = await call(
+                    s, "list_wines", since | {"limit": 1} | ({"next_token": next_token} if next_token else {})
+                )
                 seen += [w["wine_id"] for w in page["wines"]]
                 next_token = page["next_token"]
             assert seen == ids[::-1]  # newest first
@@ -110,17 +120,20 @@ async def test_add_photo_then_search_by_photo(url, token):
         wine_id = (await call(s, "create_wine", TEST_WINE))["wine"]["wine_id"]
         try:
             await put_label((await call(s, "add_photo", {"wine_id": wine_id}))["upload_url"])
-            for _ in range(20):  # the upload event records the photo a few seconds later
-                if (await call(s, "get_wine", {"wine_id": wine_id}))["wine"]["photos"]:
-                    break
-                await asyncio.sleep(1)
-            else:
-                pytest.fail("photo was never saved to the wine")
 
-            search = await call(s, "upload_search_photo", {})
-            await put_label(search["upload_url"])
-            matches = (await call(s, "search_wines", {"photo_ref": search["photo_ref"]}))["matches"]
-            assert matches and matches[0]["wine_id"] == wine_id
+            async def saved() -> bool:
+                return bool((await call(s, "get_wine", {"wine_id": wine_id}))["wine"]["photos"])
+
+            async def found_by_photo() -> bool:
+                # The photo shows on the wine just before its vector is written, so search until it's found.
+                # Each search photo is used once, so every try uploads a fresh one.
+                search = await call(s, "upload_search_photo", {})
+                await put_label(search["upload_url"])
+                matches = (await call(s, "search_wines", {"photo_ref": search["photo_ref"]}))["matches"]
+                return bool(matches) and matches[0]["wine_id"] == wine_id
+
+            await eventually(saved, "saving the photo to the wine")
+            await eventually(found_by_photo, "finding the wine by its photo")
         finally:
             await call(s, "delete_wine", {"wine_id": wine_id})
 
