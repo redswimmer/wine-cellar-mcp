@@ -1,4 +1,7 @@
-"""Lambda entry point."""
+"""Lambda entry points: the MCP server, and the S3 event for photos uploaded to a wine."""
+
+from typing import Any
+from urllib.parse import unquote_plus
 
 import boto3
 from botocore.config import Config
@@ -29,5 +32,10 @@ def _service(settings: Settings, table) -> WineService:
 
 settings = Settings.from_env()
 _table = boto3.resource("dynamodb").Table(settings.table_name)
-_tokens = TokenStore(_table)
-handler = make_handler(*build_app(_service(settings, _table), _tokens.resolve, settings.allowed_hosts))
+_wines = _service(settings, _table)
+handler = make_handler(*build_app(_wines, TokenStore(_table).resolve, settings.allowed_hosts))
+
+
+def photo_handler(event: dict[str, Any], _context: Any) -> None:
+    for record in event.get("Records", []):
+        _wines.photo_uploaded(unquote_plus(record["s3"]["object"]["key"]))

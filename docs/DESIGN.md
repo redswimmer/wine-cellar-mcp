@@ -79,8 +79,8 @@ Text search loads the user's wines with one Query and fuzzy-matches in the
 Lambda. A personal list of a few hundred to a few thousand wines fits easily,
 and it avoids running a search cluster.
 
-Photos go to `s3://<bucket>/<user_id>/<wine_id>/<ulid>.<jpg|png|webp|gif>`, in
-a private, encrypted bucket. Deleting a wine deletes its photos.
+A wine's photos are at `s3://<bucket>/wines/<user_id>/<wine_id>/<ulid>`, in a
+private, encrypted bucket. Deleting a wine deletes its photos.
 
 S3 Vectors holds one vector bucket per stage with two indexes, both 1024
 dimensions and cosine distance, and every query filtered to the caller's
@@ -101,32 +101,32 @@ vectors.
 
 | Tool | What it does |
 | --- | --- |
-| `save_wine` | Create or update a wine with a verdict, rating, notes and optionally a label photo. Matches an existing wine first so repeats don't create duplicates. |
+| `save_wine` | Create or update a wine with a verdict, rating and notes. Matches an existing wine first so repeats don't create duplicates. |
 | `add_tasting` | Add a dated tasting note and verdict to a wine. |
 | `search_wines` | Search by text, a label photo, or both, e.g. "that bold red I loved" or a photo plus what the agent read off the label. Returns ranked matches with verdicts and notes. |
-| `add_wine_photo` | Attach a label photo to a wine. A wine can have several. |
-| `create_photo_upload` | Get a one-time upload link and `photo_ref` for a label photo; see below. |
+| `add_photo` | Add a label photo to a wine: returns an upload link, and the photo is saved to the wine once uploaded. A wine can have several. |
+| `upload_search_photo` | Get an upload link and `photo_ref` for a photo to search with. Never saved. |
 | `list_wines` | Filter by verdict, style, region or varietal. |
 | `get_wine` / `delete_wine` | Fetch or remove one wine. |
 
 No tool takes a user ID. The bearer token identifies the user, so the user is
 fixed by how the sandbox was configured, not by anything the agent says.
 
-Photos never travel inside an MCP request. The agent uploads them first:
+Photos never travel inside an MCP request. The agent PUTs the image to a
+pre-signed S3 URL (valid 15 minutes), e.g.
+`curl -sSf --upload-file label.jpg "<url>"`:
 
-1. `create_photo_upload` returns a `photo_ref` and a pre-signed S3 PUT URL,
-   valid for 15 minutes, for `uploads/<user_id>/<ulid>`.
-2. The agent PUTs the image to it, e.g. `curl -sSf --upload-file label.jpg "<url>"`.
-3. It passes `photo_ref` to `save_wine`, `add_wine_photo` or `search_wines`.
-
-When a tool gets a `photo_ref`, the server checks the upload before writing
-anything. A missing upload (failed, unfinished or expired), another user's
-ref, an image over 5 MB, or anything that isn't a JPEG, PNG, WebP or GIF comes
-back as a tool error that tells the agent to upload again or send a smaller
-size, so a bad upload never leaves a half-saved wine. Saving moves the photo to
-the wine's folder and deletes the upload. A search leaves it in place, so the
-same `photo_ref` can be used to save the wine next. A lifecycle rule deletes
-anything left under `uploads/` after a day.
+- **Adding a photo to a wine** is one step: `add_photo(wine_id)` returns the
+  link, and uploading to it saves the photo to that wine. The upload's S3 event
+  runs a second Lambda that checks the image, adds it to the wine's
+  `photo_keys` and indexes it; the wine's `photo_count` goes up within a few
+  seconds. A file over 5 MB or that isn't a JPEG, PNG, WebP or GIF, or one for
+  a wine deleted meanwhile, is discarded.
+- **Searching with a photo**: `upload_search_photo` returns a link and a
+  `photo_ref` under `search/<user_id>/`; the agent uploads, then passes
+  `photo_ref` to `search_wines`. A missing, too large or non-image upload comes
+  back as a tool error telling the agent what to do. The photo is deleted after
+  the search and never saved; a lifecycle rule removes any left after a day.
 
 This also keeps photos clear of NemoClaw's 131,072-byte cap on MCP request
 bodies. The NemoClaw sandbox will need egress to the S3 endpoint for uploads

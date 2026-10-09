@@ -100,8 +100,8 @@ def test_initialize_and_list_tools(handler):
     names = {t["name"] for t in body["result"]["tools"]}
     assert names == {
         "save_wine",
-        "add_wine_photo",
-        "create_photo_upload",
+        "add_photo",
+        "upload_search_photo",
         "add_tasting",
         "search_wines",
         "list_wines",
@@ -177,8 +177,8 @@ def test_deactivated_user_is_rejected(table, tokens, monkeypatch):
     ("tool", "arguments", "message"),
     [
         ("search_wines", {}, "query, a photo_ref"),
-        ("create_photo_upload", {}, "enabled"),
-        ("save_wine", {"producer": "Ridge", "photo_ref": "uploads/x"}, "enabled"),
+        ("upload_search_photo", {}, "enabled"),
+        ("add_photo", {"wine_id": "nope"}, "No wine"),
     ],
 )
 def test_photo_problems_are_tool_errors(handler, tool, arguments, message):
