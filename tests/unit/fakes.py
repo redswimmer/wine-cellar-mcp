@@ -2,6 +2,7 @@
 
 import io
 import json
+import zlib
 
 from wine_cellar.vectors import EMBEDDING_DIMENSION, EMBEDDING_MODEL_ID
 
@@ -14,7 +15,9 @@ class FakeBedrock:
         assert modelId == EMBEDDING_MODEL_ID
         self.bodies.append(json.loads(body))
         kind = "IMAGE" if "image" in self.bodies[-1]["singleEmbeddingParams"] else "TEXT"
-        out = {"embeddings": [{"embeddingType": kind, "embedding": [0.1] * EMBEDDING_DIMENSION}]}
+        # Different input, different vector, so tests can tell when a vector was rewritten.
+        value = zlib.crc32(body.encode()) / 2**32
+        out = {"embeddings": [{"embeddingType": kind, "embedding": [value] * EMBEDDING_DIMENSION}]}
         return {"body": io.BytesIO(json.dumps(out).encode())}
 
 

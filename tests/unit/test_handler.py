@@ -1,10 +1,11 @@
 """Drives the real Lambda handler with API Gateway HTTP API (v2) events."""
 
-import importlib
 import json
 
 import pytest
 
+from wine_cellar.bootstrap import build_mcp_handler
+from wine_cellar.config import Settings
 from wine_cellar.tokens import TokenStore
 from wine_cellar.users import UserStore
 
@@ -19,14 +20,14 @@ def tokens(table):
 
 
 @pytest.fixture
-def handler(table, tokens, monkeypatch):
+def handler(table, tokens):
     global TOKEN
     TOKEN = tokens["andrew"]
-    monkeypatch.setenv("TABLE_NAME", table.name)
-    monkeypatch.setenv("ALLOWED_HOSTS", HOST)
-    import wine_cellar.handler as mod
+    return _build(table)
 
-    return importlib.reload(mod).handler
+
+def _build(table):
+    return build_mcp_handler(Settings(table_name=table.name, allowed_hosts=[HOST]), table)
 
 
 def _event(body: dict, *, token: str | None = None, host: str = HOST) -> dict:
@@ -164,15 +165,11 @@ def test_token_decides_the_user(handler, tokens):
     assert theirs["result"]["structuredContent"]["wines"] == []
 
 
-def test_deactivated_user_is_rejected(table, tokens, monkeypatch):
+def test_deactivated_user_is_rejected(table, tokens):
     sam = UserStore(table).find("sam")
     assert sam is not None
     UserStore(table).set_active(sam.user_id, False)
-    monkeypatch.setenv("TABLE_NAME", table.name)
-    monkeypatch.setenv("ALLOWED_HOSTS", HOST)
-    import wine_cellar.handler as mod
-
-    handler = importlib.reload(mod).handler
+    handler = _build(table)  # a fresh handler, so its token cache hasn't seen sam as active
     assert _call(handler, _rpc("tools/list"), token=tokens["sam"])[0] == 401
     assert _call(handler, _rpc("tools/list"), token=tokens["andrew"])[0] == 200
 

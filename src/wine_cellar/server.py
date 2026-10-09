@@ -13,8 +13,7 @@ from pydantic import Field
 from starlette.types import ASGIApp
 
 from .auth import USER_ID_STATE_KEY, BearerAuthMiddleware
-from .models import Verdict, Wine
-from .photos import MAX_PHOTO_BYTES, UPLOAD_URL_SECONDS, InvalidPhotoError, Upload, photo_added_at, photo_id_of
+from .models import InvalidPhotoError, Upload, Verdict, Wine, photo_added_at, photo_id_of
 from .service import (
     InvalidPageTokenError,
     PhotoNotFoundError,
@@ -126,8 +125,8 @@ def build_server(service: WineService) -> MCPServer:
         return {
             "upload_url": upload.upload_url,
             "method": "PUT",
-            "max_bytes": MAX_PHOTO_BYTES,
-            "expires_in_seconds": UPLOAD_URL_SECONDS,
+            "max_bytes": upload.max_bytes,
+            "expires_in_seconds": upload.expires_in_seconds,
         }
 
     @mcp.tool()

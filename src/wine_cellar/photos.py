@@ -9,11 +9,13 @@ Images never travel inside an MCP request; agents PUT them straight to S3 with a
 """
 
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
+from urllib.parse import unquote_plus
 
 from botocore.exceptions import ClientError
 from ulid import ULID
+
+from .models import InvalidPhotoError, Upload
 
 MAX_PHOTO_BYTES = 5_000_000
 WINE_PREFIX = "wines/"
@@ -30,20 +32,10 @@ _SIGNATURES = {
 }
 
 
-class InvalidPhotoError(ValueError):
-    """The photo can't be used; the message tells the agent what to do instead."""
-
-
 @dataclass(frozen=True)
 class Photo:
     data: bytes
     format: str  # jpeg, png, gif or webp
-
-
-@dataclass(frozen=True)
-class Upload:
-    photo_ref: str
-    upload_url: str
 
 
 def _check_size(size: int) -> None:
@@ -65,21 +57,17 @@ def sniff(data: bytes) -> Photo:
     raise InvalidPhotoError("The upload isn't a JPEG, PNG, WebP or GIF image. Upload the photo itself.")
 
 
-def photo_id_of(key: str) -> str:
-    """A photo's id: the ULID at the end of its key, which also records when it was added."""
-    return key.rsplit("/", 1)[-1].split(".", 1)[0]
-
-
-def photo_added_at(key: str) -> datetime:
-    return ULID.from_str(photo_id_of(key)).datetime
-
-
 def wine_photo_owner(key: str) -> tuple[str, str] | None:
     """The (user_id, wine_id) a wine photo key belongs to, or None for any other key."""
     parts = key.removeprefix(WINE_PREFIX).split("/")
     if not key.startswith(WINE_PREFIX) or len(parts) != 3 or not all(parts):
         return None
     return parts[0], parts[1]
+
+
+def uploaded_keys(event: dict[str, Any]) -> list[str]:
+    """The object keys in an S3 upload event. S3 URL-encodes them, with spaces as '+'."""
+    return [unquote_plus(record["s3"]["object"]["key"]) for record in event.get("Records", [])]
 
 
 class PhotoStore:
@@ -91,7 +79,7 @@ class PhotoStore:
         url = self._s3.generate_presigned_url(
             "put_object", Params={"Bucket": self._bucket, "Key": key}, ExpiresIn=UPLOAD_URL_SECONDS
         )
-        return Upload(key, url)
+        return Upload(key, url, max_bytes=MAX_PHOTO_BYTES, expires_in_seconds=UPLOAD_URL_SECONDS)
 
     def create_wine_upload(self, user_id: str, wine_id: str) -> Upload:
         return self._upload_link(f"{WINE_PREFIX}{user_id}/{wine_id}/{ULID()}")

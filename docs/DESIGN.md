@@ -193,6 +193,11 @@ layers without deploying. `tests/e2e` holds end-to-end smoke tests against a
 deployed endpoint; the Deploy workflow runs them after every dev deploy, and
 they can also be run by hand (see [Connecting clients](#connecting-clients)).
 
+The code is layered: Lambda entry points, then `bootstrap` (the only place AWS
+clients are built), the MCP tools, the service, the stores, and the domain model.
+The rules are in `pyproject.toml` under `[tool.importlinter]`, and CI checks them
+with `uv run lint-imports`.
+
 ## Build steps
 
 The MCP server is built and dialed in with Claude Code as the agent before any

@@ -153,7 +153,7 @@ class WineCellarServiceStack(Stack):
 
         fn = function("McpFunction", "wine_cellar.handler.handler", Duration.seconds(25))
         # A photo uploaded to a wine's link is checked, recorded on the wine and indexed by this function.
-        photo_fn = function("PhotoFunction", "wine_cellar.handler.photo_handler", Duration.seconds(60))
+        photo_fn = function("PhotoFunction", "wine_cellar.photo_handler.handler", Duration.seconds(60))
         photo_bucket.add_event_notification(
             s3.EventType.OBJECT_CREATED, s3n.LambdaDestination(photo_fn), s3.NotificationKeyFilter(prefix=WINE_PREFIX)
         )

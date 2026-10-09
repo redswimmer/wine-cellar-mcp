@@ -5,13 +5,14 @@ import binascii
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
 from ulid import ULID
 
 from . import search
-from .models import Verdict, Wine
-from .photos import InvalidPhotoError, PhotoStore, Upload, photo_id_of, wine_photo_owner
+from .models import InvalidPhotoError, Upload, Verdict, Wine, photo_id_of
+from .photos import PhotoStore, wine_photo_owner
 from .repository import WineRepository
 from .vectors import WinePhotoIndex, WineTextIndex
 
@@ -153,6 +154,27 @@ class WineService:
         if photos is not None:
             _best_effort(lambda: photos.delete([key]), f"Photo delete for {key}")
         return updated
+
+    def reindex(self, user_id: str) -> tuple[int, int]:
+        """Rewrite a user's text and photo vectors from DynamoDB, e.g. after changing models.
+
+        Returns how many wines and photos were indexed. A photo that can't be read is logged and skipped, so one bad
+        file doesn't stop the run; a vector store or Bedrock failure is raised.
+        """
+        wines = self._repo.list_for_user(user_id)
+        text_index, photos, photo_index = self._text_index, self._photos, self._photo_index
+        n_photos = 0
+        for wine in wines:
+            if text_index is not None:
+                text_index.upsert(wine)
+            if photos is None or photo_index is None:
+                continue
+            for key in wine.photo_keys:
+                photo = _best_effort(partial(photos.get, key), f"Reading photo {key}")
+                if photo is not None:
+                    photo_index.upsert(key, photo.data, photo.format, user_id=user_id, wine_id=wine.wine_id)
+                    n_photos += 1
+        return len(wines), n_photos
 
     def get_wine(self, user_id: str, wine_id: str) -> Wine:
         wine = self._repo.get(user_id, wine_id)

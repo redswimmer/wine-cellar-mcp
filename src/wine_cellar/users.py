@@ -11,6 +11,8 @@ from typing import Any
 
 from ulid import ULID
 
+from .repository import USER_PREFIX, user_pk
+
 USER_ID_PREFIX = "usr_"
 PROFILE_SK = "PROFILE"
 USERNAME_SK = "USERNAME"
@@ -24,7 +26,7 @@ class UsernameTakenError(ValueError):
 def _key(user_id: str) -> dict[str, str]:
     # Same partition as the user's wines (USER#<id>), which are keyed WINE#..., so a profile never
     # shows up in wine queries.
-    return {"pk": f"USER#{user_id}", "sk": PROFILE_SK}
+    return {"pk": user_pk(user_id), "sk": PROFILE_SK}
 
 
 def _username_key(username: str) -> dict[str, str]:
@@ -111,11 +113,11 @@ class UserStore:
         users: list[User] = []
         kwargs: dict[str, Any] = {
             "FilterExpression": "begins_with(pk, :p) AND sk = :s",
-            "ExpressionAttributeValues": {":p": "USER#", ":s": PROFILE_SK},
+            "ExpressionAttributeValues": {":p": USER_PREFIX, ":s": PROFILE_SK},
         }
         while True:
             resp = self._table.scan(**kwargs)
-            users += [_from_item(i["pk"].removeprefix("USER#"), i) for i in resp.get("Items", [])]
+            users += [_from_item(i["pk"].removeprefix(USER_PREFIX), i) for i in resp.get("Items", [])]
             if "LastEvaluatedKey" not in resp:
                 return sorted(users, key=lambda u: u.created_at)
             kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]

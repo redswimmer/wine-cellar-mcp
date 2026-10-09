@@ -1,10 +1,12 @@
-"""Domain model: a wine the person has tried and what they think of it."""
+"""Domain model: a wine the person has tried and what they think of it, and its label photos."""
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
+from ulid import ULID
 
 
 class Verdict(StrEnum):
@@ -44,3 +46,26 @@ class Wine(BaseModel):
     @property
     def label(self) -> str:
         return " ".join(p for p in [self.name, str(self.vintage) if self.vintage else ""] if p)
+
+
+class InvalidPhotoError(ValueError):
+    """The photo can't be used; the message tells the agent what to do instead."""
+
+
+@dataclass(frozen=True)
+class Upload:
+    """A link the agent PUTs a photo to, and the limits that apply to it."""
+
+    photo_ref: str
+    upload_url: str
+    max_bytes: int
+    expires_in_seconds: int
+
+
+def photo_id_of(key: str) -> str:
+    """A photo's id: the ULID at the end of its key, which also records when it was added."""
+    return key.rsplit("/", 1)[-1].split(".", 1)[0]
+
+
+def photo_added_at(key: str) -> datetime:
+    return ULID.from_str(photo_id_of(key)).datetime
