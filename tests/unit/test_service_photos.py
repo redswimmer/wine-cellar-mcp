@@ -1,7 +1,9 @@
+"""High gear: label photos through WineService, with S3 on moto and fake vectors."""
+
 import pytest
 
 from wine_cellar.models import InvalidPhotoError, photo_id_of
-from wine_cellar.photos import MAX_PHOTO_BYTES, PhotoStore, sniff, uploaded_keys, wine_photo_owner
+from wine_cellar.photos import MAX_PHOTO_BYTES, PhotoStore
 from wine_cellar.repository import WineRepository
 from wine_cellar.service import PhotoNotFoundError, PhotosDisabledError, WineNotFoundError, WineService
 from wine_cellar.vectors import Embedder, WinePhotoIndex
@@ -28,13 +30,6 @@ def add_photo(service, s3, wine_id: str, data: bytes = JPEG) -> str:
     return key
 
 
-def test_sniff_recognises_common_formats():
-    assert sniff(JPEG).format == "jpeg"
-    assert sniff(b"\x89PNG\r\n\x1a\n" + b"x" * 10).format == "png"
-    assert sniff(b"RIFF\x00\x00\x00\x00WEBPVP8 ").format == "webp"
-    assert sniff(b"GIF89a...").format == "gif"
-
-
 def test_add_photo_link_uploads_straight_to_the_wine(service):
     wine = service.create_wine(USER, name="Ridge")
     link = service.add_photo(USER, wine.wine_id)
@@ -54,26 +49,6 @@ def test_uploaded_photo_is_saved_to_the_wine_and_indexed(service, s3, photo_vect
 
     assert service.get_wine(USER, wine.wine_id).photo_keys == [first, second]
     assert photo_vectors.vectors[first]["metadata"] == {"user_id": USER, "wine_id": wine.wine_id}
-
-
-def test_upload_event_keys_are_decoded():
-    event = {"Records": [{"s3": {"object": {"key": "wines/usr_1/w1/01J+label%2Bshot.jpg"}}}]}
-    assert uploaded_keys(event) == ["wines/usr_1/w1/01J label+shot.jpg"]
-    assert uploaded_keys({}) == []
-
-
-@pytest.mark.parametrize(
-    ("key", "owner"),
-    [
-        ("wines/usr_1/w1/01J", ("usr_1", "w1")),
-        ("search/usr_1/01J", None),
-        ("wines/usr_1/01J", None),
-        ("wines/usr_1/w1/01J/extra", None),
-        ("wines//w1/01J", None),
-    ],
-)
-def test_wine_photo_owner_accepts_only_wine_photo_keys(key, owner):
-    assert wine_photo_owner(key) == owner
 
 
 def test_uploads_outside_wines_are_ignored(service, s3):

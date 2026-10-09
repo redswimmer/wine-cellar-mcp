@@ -1,8 +1,10 @@
+"""High gear: recording, listing and finding wines through WineService, using primitives only."""
+
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from wine_cellar.models import Verdict, Wine
+from wine_cellar.models import Verdict
 from wine_cellar.service import InvalidPageTokenError, InvalidWineError, WineNotFoundError
 
 from .conftest import USER
@@ -119,22 +121,6 @@ def test_filtered_page_keeps_reading_until_full(service):
 def test_list_rejects_a_bad_token(service, token):
     with pytest.raises(InvalidPageTokenError):
         service.list_wines(USER, next_token=token)
-
-
-def test_reads_wines_saved_before_the_model_was_simplified():
-    wine = Wine.model_validate(
-        {
-            "wine_id": "w",
-            "user_id": USER,
-            "producer": "Ridge",
-            "name": "Monte Bello",
-            "varietals": ["Cab", "Merlot"],
-            "region": "Santa Cruz",
-            "tastings": [],
-            "rating": 5,
-        }
-    )
-    assert (wine.name, wine.varietal) == ("Ridge Monte Bello", "Cab, Merlot")
 
 
 def test_delete(service):

@@ -1,3 +1,5 @@
+"""Adapter: the user store over DynamoDB (moto), and that profiles share the table with wines safely."""
+
 import pytest
 
 from wine_cellar.repository import WineRepository, user_pk

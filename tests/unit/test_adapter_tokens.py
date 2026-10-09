@@ -1,3 +1,5 @@
+"""Adapter: the token store over DynamoDB (moto)."""
+
 import pytest
 
 from wine_cellar.tokens import TOKEN_PREFIX, TokenStore, hash_token
