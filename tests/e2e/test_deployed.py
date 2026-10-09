@@ -1,4 +1,4 @@
-"""Smoke tests for a deployed endpoint: auth, the tool list, list paging, and save/search/get/delete round trips (text and photo)."""
+"""Smoke tests for a deployed endpoint: auth, the tool list, list paging, save/search/get/delete round trips."""
 
 import asyncio
 import json
