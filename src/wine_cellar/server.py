@@ -14,7 +14,7 @@ from starlette.types import ASGIApp
 
 from .auth import USER_ID_STATE_KEY, BearerAuthMiddleware
 from .models import Style, Verdict, Wine
-from .photos import InvalidPhotoError, Photo, decode_photo
+from .photos import MAX_PHOTO_BYTES, UPLOAD_URL_SECONDS, InvalidPhotoError
 from .service import PhotosDisabledError, WineNotFoundError, WineService
 
 INSTRUCTIONS = """\
@@ -23,15 +23,10 @@ Before saving a wine, use search_wines to check whether it is already recorded.
 """
 
 WineId = Annotated[str, Field(description="wine_id returned by another tool")]
-PHOTO_DESCRIPTION = "Label photo as base64 (JPEG, PNG, WebP or GIF), at most 95 KB before encoding"
-PhotoArg = Annotated[str | None, Field(description=PHOTO_DESCRIPTION)]
-
-
-def _photo(photo_base64: str | None) -> Photo | None:
-    try:
-        return decode_photo(photo_base64) if photo_base64 else None
-    except InvalidPhotoError as e:
-        raise ToolError(str(e)) from e
+PHOTO_REF_DESCRIPTION = "photo_ref from create_photo_upload, after uploading the label photo to its upload_url"
+PhotoRef = Annotated[str | None, Field(description=PHOTO_REF_DESCRIPTION)]
+# Mistakes the agent can fix (unknown wine, bad or missing upload, photos off) come back as tool errors.
+AGENT_ERRORS = (WineNotFoundError, InvalidPhotoError, PhotosDisabledError)
 
 
 def current_user(ctx: Context) -> str:
@@ -67,14 +62,13 @@ def build_server(service: WineService) -> MCPServer:
         verdict: Annotated[Verdict | None, Field(description="How the person felt about it")] = None,
         rating: Annotated[int | None, Field(ge=1, le=5, description="Optional 1-5 score")] = None,
         notes: Annotated[str, Field(description="What the person said about it")] = "",
-        photo: PhotoArg = None,
+        photo_ref: PhotoRef = None,
     ) -> dict[str, Any]:
         """Record a wine and the person's opinion of it. Updates the existing record if the wine was saved before.
 
-        Read the producer, name and vintage off the label yourself. Pass the label photo too, if there is one, so the
-        wine can be found from a photo later.
+        Read the producer, name and vintage off the label yourself. If there is a label photo, upload it (see
+        create_photo_upload) and pass its photo_ref, so the wine can be found from a photo later.
         """
-        label_photo = _photo(photo)
         try:
             wine, created = service.save_wine(
                 current_user(ctx),
@@ -88,23 +82,39 @@ def build_server(service: WineService) -> MCPServer:
                 verdict=verdict,
                 rating=rating,
                 notes=notes,
-                photo=label_photo,
+                photo_ref=photo_ref,
             )
-        except PhotosDisabledError as e:
+        except AGENT_ERRORS as e:
             raise ToolError(str(e)) from e
         return {"created": created, "wine": _summary(wine)}
 
     @mcp.tool()
+    def create_photo_upload(ctx: Context) -> dict[str, Any]:
+        """Get a one-time link for uploading a label photo, before passing the photo to another tool.
+
+        PUT the image file to upload_url (for example `curl -sSf --upload-file label.jpg "<upload_url>"`), check the
+        upload succeeded, then pass photo_ref to save_wine, add_wine_photo or search_wines. JPEG, PNG, WebP or GIF.
+        """
+        try:
+            upload = service.create_photo_upload(current_user(ctx))
+        except PhotosDisabledError as e:
+            raise ToolError(str(e)) from e
+        return {
+            "photo_ref": upload.photo_ref,
+            "upload_url": upload.upload_url,
+            "method": "PUT",
+            "max_bytes": MAX_PHOTO_BYTES,
+            "expires_in_seconds": UPLOAD_URL_SECONDS,
+        }
+
+    @mcp.tool()
     def add_wine_photo(
-        ctx: Context, wine_id: WineId, photo: Annotated[str, Field(description=PHOTO_DESCRIPTION)]
+        ctx: Context, wine_id: WineId, photo_ref: Annotated[str, Field(description=PHOTO_REF_DESCRIPTION)]
     ) -> dict[str, Any]:
         """Attach another label photo to a recorded wine, e.g. the back label or a different vintage's label."""
-        label_photo = _photo(photo)
-        if label_photo is None:
-            raise ToolError("Send a photo")
         try:
-            wine = service.add_wine_photo(current_user(ctx), wine_id, label_photo)
-        except (WineNotFoundError, PhotosDisabledError) as e:
+            wine = service.add_wine_photo(current_user(ctx), wine_id, photo_ref)
+        except AGENT_ERRORS as e:
             raise ToolError(str(e)) from e
         return {"wine": _summary(wine)}
 
@@ -133,22 +143,26 @@ def build_server(service: WineService) -> MCPServer:
             str,
             Field(
                 description="Free text, matched by name and by meaning: a producer or wine, "
-                "or a description like 'that bold red I loved'. With a photo, pass what the label says."
+                "or a description like 'that bold red I loved'. With a photo, also pass what the label says."
             ),
         ] = "",
-        photo: PhotoArg = None,
+        photo_ref: PhotoRef = None,
         limit: Annotated[int, Field(ge=1, le=20)] = 5,
     ) -> dict[str, Any]:
         """Find wines the person has recorded, best match first, with their verdicts and notes.
 
         Give text, a label photo, or both. Text matches names (typos and partial names are fine) and meaning, using
         the person's notes too; a photo matches the label photos they saved. For "do I like this wine?" from a photo,
-        send the photo plus the producer, name and vintage you read off the label.
+        upload the photo (see create_photo_upload) and pass its photo_ref plus the producer, name and vintage you read
+        off the label. The same photo_ref can then be passed to save_wine.
         The closest wines come back even when none is a real match, so check them before relying on one.
         """
-        if not query.strip() and not photo:
-            raise ToolError("Give a query, a photo, or both")
-        matches = service.search_wines(current_user(ctx), query, photo=_photo(photo), limit=limit)
+        if not query.strip() and not photo_ref:
+            raise ToolError("Give a query, a photo_ref, or both")
+        try:
+            matches = service.search_wines(current_user(ctx), query, photo_ref=photo_ref, limit=limit)
+        except AGENT_ERRORS as e:
+            raise ToolError(str(e)) from e
         return {"matches": [_summary(w) for w in matches]}
 
     @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))

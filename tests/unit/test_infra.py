@@ -73,6 +73,11 @@ def test_photo_bucket_is_private_and_encrypted(asset_dir):
                 "RestrictPublicBuckets": True,
             },
             "BucketEncryption": Match.object_like({}),
+            "LifecycleConfiguration": {
+                "Rules": Match.array_with(
+                    [Match.object_like({"Prefix": "uploads/", "ExpirationInDays": 1, "Status": "Enabled"})]
+                )
+            },
         },
     )
 

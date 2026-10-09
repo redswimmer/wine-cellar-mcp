@@ -105,21 +105,32 @@ vectors.
 | `add_tasting` | Add a dated tasting note and verdict to a wine. |
 | `search_wines` | Search by text, a label photo, or both, e.g. "that bold red I loved" or a photo plus what the agent read off the label. Returns ranked matches with verdicts and notes. |
 | `add_wine_photo` | Attach a label photo to a wine. A wine can have several. |
+| `create_photo_upload` | Get a one-time upload link and `photo_ref` for a label photo; see below. |
 | `list_wines` | Filter by verdict, style, region or varietal. |
 | `get_wine` / `delete_wine` | Fetch or remove one wine. |
 
 No tool takes a user ID. The bearer token identifies the user, so the user is
 fixed by how the sandbox was configured, not by anything the agent says.
 
-Photos arrive base64-encoded in the tool call (`search_wines`, `save_wine`,
-`add_wine_photo`) as JPEG, PNG, WebP or GIF. NemoClaw's egress policy caps an
-MCP request body at 131,072 bytes, so a photo must be 95 KB or less before
-encoding. Telegram stores every photo in several sizes, and the ~800 px
-version is usually under that while still readable for label text. The tool
-rejects oversized images with a message telling the agent to send a smaller
-size. If that proves unreliable, the photo tools can also accept a Telegram
-`file_id` and fetch the photo from the Bot API itself (needs the bot token in
-Secrets Manager).
+Photos never travel inside an MCP request. The agent uploads them first:
+
+1. `create_photo_upload` returns a `photo_ref` and a pre-signed S3 PUT URL,
+   valid for 15 minutes, for `uploads/<user_id>/<ulid>`.
+2. The agent PUTs the image to it, e.g. `curl -sSf --upload-file label.jpg "<url>"`.
+3. It passes `photo_ref` to `save_wine`, `add_wine_photo` or `search_wines`.
+
+When a tool gets a `photo_ref`, the server checks the upload before writing
+anything. A missing upload (failed, unfinished or expired), another user's
+ref, an image over 5 MB, or anything that isn't a JPEG, PNG, WebP or GIF comes
+back as a tool error that tells the agent to upload again or send a smaller
+size, so a bad upload never leaves a half-saved wine. Saving moves the photo to
+the wine's folder and deletes the upload. A search leaves it in place, so the
+same `photo_ref` can be used to save the wine next. A lifecycle rule deletes
+anything left under `uploads/` after a day.
+
+This also keeps photos clear of NemoClaw's 131,072-byte cap on MCP request
+bodies. The NemoClaw sandbox will need egress to the S3 endpoint for uploads
+(step 5).
 
 ## Search flow
 

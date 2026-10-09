@@ -8,7 +8,7 @@ from ulid import ULID
 
 from . import search
 from .models import Style, Tasting, Verdict, Wine
-from .photos import Photo, PhotoStore
+from .photos import Photo, PhotoStore, Upload
 from .repository import WineRepository
 from .vectors import WinePhotoIndex, WineTextIndex
 
@@ -71,11 +71,11 @@ class WineService:
         verdict: Verdict | None = None,
         rating: int | None = None,
         notes: str = "",
-        photo: Photo | None = None,
+        photo_ref: str | None = None,
     ) -> tuple[Wine, bool]:
         """Create a wine, or update the matching one. Returns the wine and whether it was new."""
-        if photo is not None and self._photos is None:
-            raise PhotosDisabledError("Photos aren't enabled on this server")
+        # Check the photo before writing anything, so a bad upload doesn't leave a half-saved wine.
+        photo = self._load_upload(user_id, photo_ref) if photo_ref else None
         candidate = Wine(
             wine_id=str(ULID()),
             user_id=user_id,
@@ -93,7 +93,7 @@ class WineService:
         existing = search.find_same_wine(candidate, self._repo.list_for_user(user_id))
         if existing is None:
             self._save(candidate)
-            return (self._attach_photo(candidate, photo) if photo else candidate), True
+            return (self._attach_upload(candidate, photo_ref, photo) if photo_ref and photo else candidate), True
 
         # Only overwrite fields the caller actually supplied.
         updates = {
@@ -111,16 +111,31 @@ class WineService:
         }
         updated = existing.model_copy(update={**updates, "updated_at": datetime.now(UTC)})
         self._save(updated)
-        return (self._attach_photo(updated, photo) if photo else updated), False
+        return (self._attach_upload(updated, photo_ref, photo) if photo_ref and photo else updated), False
 
-    def add_wine_photo(self, user_id: str, wine_id: str, photo: Photo) -> Wine:
-        return self._attach_photo(self.get_wine(user_id, wine_id), photo)
+    def create_photo_upload(self, user_id: str) -> Upload:
+        return self._photo_store().create_upload(user_id)
 
-    def _attach_photo(self, wine: Wine, photo: Photo) -> Wine:
-        """Store a label photo, add it to the wine and index it. A failed vector write is logged, as for text."""
+    def add_wine_photo(self, user_id: str, wine_id: str, photo_ref: str) -> Wine:
+        wine = self.get_wine(user_id, wine_id)
+        return self._attach_upload(wine, photo_ref, self._load_upload(user_id, photo_ref))
+
+    def _photo_store(self) -> PhotoStore:
         if self._photos is None:
             raise PhotosDisabledError("Photos aren't enabled on this server")
-        key = self._photos.put(wine.user_id, wine.wine_id, photo)
+        return self._photos
+
+    def _load_upload(self, user_id: str, photo_ref: str) -> Photo:
+        """The checked photo behind a photo_ref; raises InvalidPhotoError with what the agent should do."""
+        return self._photo_store().load_upload(user_id, photo_ref)
+
+    def _attach_upload(self, wine: Wine, photo_ref: str, photo: Photo) -> Wine:
+        """Store an uploaded label photo with the wine, index it and drop the upload.
+
+        A failed vector write or upload cleanup is logged, as for text; the lifecycle rule removes stray uploads.
+        """
+        photos = self._photo_store()
+        key = photos.put(wine.user_id, wine.wine_id, photo)
         updated = wine.model_copy(update={"photo_keys": [*wine.photo_keys, key], "updated_at": datetime.now(UTC)})
         self._repo.put(updated)  # the text vector doesn't describe photos, so it needs no refresh
         photo_index = self._photo_index
@@ -129,6 +144,7 @@ class WineService:
                 lambda: photo_index.upsert(key, photo.data, photo.format, user_id=wine.user_id, wine_id=wine.wine_id),
                 f"Photo vector upsert for {key}",
             )
+        _best_effort(lambda: photos.delete_upload(photo_ref), f"Upload cleanup for {photo_ref}")
         return updated
 
     def add_tasting(
@@ -171,12 +187,14 @@ class WineService:
         if photos is not None:
             _best_effort(lambda: photos.delete(wine.photo_keys), f"Photo delete for wine {wine_id}")
 
-    def search_wines(self, user_id: str, query: str = "", photo: Photo | None = None, limit: int = 5) -> list[Wine]:
+    def search_wines(self, user_id: str, query: str = "", photo_ref: str | None = None, limit: int = 5) -> list[Wine]:
         """Best matches first, merging every search that applies by rank (reciprocal rank fusion).
 
         Text is fuzzy-matched by name and matched by meaning against the text vectors; a photo is matched against
-        the label photo vectors. Text and photos are never compared with each other.
+        the label photo vectors. Text and photos are never compared with each other. The upload is kept, so the same
+        photo_ref can be used to save the wine afterwards.
         """
+        photo = self._load_upload(user_id, photo_ref) if photo_ref else None
         wines = {w.wine_id: w for w in self._repo.list_for_user(user_id)}
         text_index, photo_index = self._text_index, self._photo_index
         rankings: list[list[str]] = []

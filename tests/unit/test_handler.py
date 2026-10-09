@@ -101,6 +101,7 @@ def test_initialize_and_list_tools(handler):
     assert names == {
         "save_wine",
         "add_wine_photo",
+        "create_photo_upload",
         "add_tasting",
         "search_wines",
         "list_wines",
@@ -175,9 +176,9 @@ def test_deactivated_user_is_rejected(table, tokens, monkeypatch):
 @pytest.mark.parametrize(
     ("tool", "arguments", "message"),
     [
-        ("search_wines", {}, "query, a photo"),
-        ("search_wines", {"photo": "bm90IGFuIGltYWdl"}, "JPEG, PNG"),
-        ("save_wine", {"producer": "Ridge", "photo": "/9j/4AAQ"}, "enabled"),
+        ("search_wines", {}, "query, a photo_ref"),
+        ("create_photo_upload", {}, "enabled"),
+        ("save_wine", {"producer": "Ridge", "photo_ref": "uploads/x"}, "enabled"),
     ],
 )
 def test_photo_problems_are_tool_errors(handler, tool, arguments, message):

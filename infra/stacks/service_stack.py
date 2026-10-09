@@ -22,6 +22,7 @@ from aws_cdk import aws_s3vectors as s3vectors
 from aws_cdk.aws_apigatewayv2_integrations import HttpLambdaIntegration
 from constructs import Construct
 
+from wine_cellar.photos import UPLOAD_PREFIX, UPLOAD_RETENTION_DAYS
 from wine_cellar.vectors import EMBEDDING_DIMENSION, EMBEDDING_MODEL_ID
 
 TEXT_INDEX_NAME = "wine-text"
@@ -94,6 +95,8 @@ class WineCellarServiceStack(Stack):
             enforce_ssl=True,
             removal_policy=removal,
             auto_delete_objects=not config.is_prod,
+            # Uploads that never get attached to a wine (failed saves, photo-only searches).
+            lifecycle_rules=[s3.LifecycleRule(prefix=UPLOAD_PREFIX, expiration=Duration.days(UPLOAD_RETENTION_DAYS))],
         )
 
         fn = lambda_.Function(
@@ -130,8 +133,8 @@ class WineCellarServiceStack(Stack):
                 resources=[index.attr_index_arn for index in indexes.values()],
             )
         )
-        photo_bucket.grant_put(fn)
-        photo_bucket.grant_delete(fn)
+        # Put also lets the Lambda sign the upload URLs it hands to agents; read checks the uploads.
+        photo_bucket.grant_read_write(fn)
         fn.add_to_role_policy(
             iam.PolicyStatement(
                 actions=["bedrock:InvokeModel"],

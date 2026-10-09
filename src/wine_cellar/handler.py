@@ -1,6 +1,7 @@
 """Lambda entry point."""
 
 import boto3
+from botocore.config import Config
 
 from .config import Settings
 from .lambda_adapter import make_handler
@@ -19,7 +20,9 @@ def _service(settings: Settings, table) -> WineService:
     return WineService(
         WineRepository(table),
         WineTextIndex(s3vectors, embedder, bucket=settings.vector_bucket, index=settings.text_index),
-        photos=PhotoStore(boto3.client("s3"), settings.photo_bucket) if settings.photo_bucket else None,
+        photos=PhotoStore(boto3.client("s3", config=Config(signature_version="s3v4")), settings.photo_bucket)
+        if settings.photo_bucket
+        else None,
         photo_index=WinePhotoIndex(s3vectors, embedder, bucket=settings.vector_bucket, index=settings.photo_index),
     )
 
