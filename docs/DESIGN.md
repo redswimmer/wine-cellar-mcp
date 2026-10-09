@@ -190,8 +190,8 @@ an AWS role through OIDC, so there are no long-lived keys. Setup is in
 `tests/unit` is what CI runs. The Lambda handler tests drive the real handler
 with API Gateway events against moto, which covers the HTTP, auth and MCP
 layers without deploying. `tests/e2e` holds end-to-end smoke tests against a
-deployed endpoint; they need a token, so they run by hand for now (see
-[Connecting clients](#connecting-clients)).
+deployed endpoint; the Deploy workflow runs them after every dev deploy, and
+they can also be run by hand (see [Connecting clients](#connecting-clients)).
 
 ## Build steps
 

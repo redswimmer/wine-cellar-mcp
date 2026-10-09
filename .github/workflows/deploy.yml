@@ -75,3 +75,32 @@ jobs:
           echo '```json' >> "$GITHUB_STEP_SUMMARY"
           cat cdk-outputs.json >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  e2e:
+    needs: deploy
+    if: (inputs.stage || 'dev') == 'dev'
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      WINE_MCP_TOKEN: ${{ secrets.WINE_MCP_TOKEN }}
+    steps:
+      - name: Check token
+        id: setup
+        run: |
+          if [ -z "$WINE_MCP_TOKEN" ]; then
+            echo "::warning::WINE_MCP_TOKEN is not set on the dev environment; skipping e2e tests. See docs/DEPLOY.md."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.setup.outputs.ready == 'true'
+      - uses: astral-sh/setup-uv@v6
+        if: steps.setup.outputs.ready == 'true'
+        with:
+          enable-cache: true
+      - name: E2E tests against dev
+        if: steps.setup.outputs.ready == 'true'
+        run: |
+          uv sync --frozen
+          uv run pytest tests/e2e

@@ -63,8 +63,12 @@ error means it's time to run `aws sso login` again.
    - Variables (Actions, repository level): `AWS_DEPLOY_ROLE_ARN` = the role
      ARN from step 3, and `HOSTED_ZONE_ID` = the ID from step 1.
 
+   - Secret (Environments → `dev`): `WINE_MCP_TOKEN` = a dev token for a
+     dedicated test user, used by the e2e tests after each dev deploy:
+     `uv run wine-tokens --stage dev add-user --username ci --label github-e2e`
+
 Until `AWS_DEPLOY_ROLE_ARN` is set, the deploy job skips with a warning
-instead of failing.
+instead of failing; likewise the e2e job skips until `WINE_MCP_TOKEN` is set.
 
 ## After a deploy
 
