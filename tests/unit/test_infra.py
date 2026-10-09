@@ -22,7 +22,7 @@ def _service(asset_dir, *, stage="dev", domain=True) -> Template:
     config = ServiceConfig(
         stage=stage,
         lambda_asset_path=asset_dir,
-        domain=DomainConfig("Z123", "redswimmer.com", f"mcp.wine-{stage}.redswimmer.com") if domain else None,
+        domain=DomainConfig("Z123", "example.com", f"mcp.wine-{stage}.example.com") if domain else None,
     )
     return Template.from_stack(WineCellarServiceStack(app, "S", env=ENV, config=config))
 
@@ -38,7 +38,7 @@ def test_lambda_is_arm64_python_with_env(asset_dir):
             "Environment": {
                 "Variables": {
                     "TABLE_NAME": Match.any_value(),
-                    "ALLOWED_HOSTS": "mcp.wine-dev.redswimmer.com",
+                    "ALLOWED_HOSTS": "mcp.wine-dev.example.com",
                     "VECTOR_BUCKET": "wine-cellar-vectors-dev",
                     "TEXT_INDEX": "wine-text",
                     "PHOTO_INDEX": "wine-photos",
@@ -140,7 +140,7 @@ def test_photos_uploaded_to_a_wine_trigger_the_photo_function(asset_dir):
 def test_custom_domain_disables_default_endpoint(asset_dir):
     t = _service(asset_dir)
     t.has_resource_properties("AWS::ApiGatewayV2::Api", {"DisableExecuteApiEndpoint": True})
-    t.has_resource_properties("AWS::ApiGatewayV2::DomainName", {"DomainName": "mcp.wine-dev.redswimmer.com"})
+    t.has_resource_properties("AWS::ApiGatewayV2::DomainName", {"DomainName": "mcp.wine-dev.example.com"})
     t.resource_count_is("AWS::Route53::RecordSet", 1)
 
 
@@ -166,7 +166,7 @@ def test_prod_retains_data_and_dev_does_not(asset_dir):
 
 def test_oidc_role_trusts_only_repo_environments():
     app = cdk.App()
-    prefix = "repo:redswimmer@38088099/wine-cellar-mcp@1410527756"
+    prefix = "repo:example-org@1001/example-repo@2002"
     stack = GithubOidcStack(app, "O", env=ENV, sub_prefix=prefix, environments=["dev", "prod"])
     Template.from_stack(stack).has_resource_properties(
         "AWS::IAM::Role",

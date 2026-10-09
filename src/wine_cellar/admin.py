@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("reindex", help="Rewrite every wine's text and photo vectors, e.g. after changing models")
 
     args = parser.parse_args(argv)
-    region = boto3.session.Session().region_name or "us-east-1"
+    region = boto3.session.Session().region_name
     outputs = _stack_outputs(args.stage)
     table = boto3.resource("dynamodb", region_name=region).Table(outputs["TableName"])
     users, tokens = UserStore(table), TokenStore(table)

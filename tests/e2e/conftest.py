@@ -1,7 +1,8 @@
 """End-to-end tests against a deployed MCP endpoint. Not collected by default; run with `uv run pytest tests/e2e`.
 
-The URL comes from $WINE_MCP_URL (default: dev). The token comes from $WINE_MCP_TOKEN, or from
-$WINE_MCP_TOKEN_FILE (default ~/.config/wine-cellar/dev-token). Tests skip when no token is available.
+The URL comes from $WINE_MCP_URL, the stack's `McpUrl` output (e.g. https://mcp.wine-dev.example.com/mcp).
+The token comes from $WINE_MCP_TOKEN, or from $WINE_MCP_TOKEN_FILE (default ~/.config/wine-cellar/dev-token).
+Tests skip when either is missing.
 """
 
 import asyncio
@@ -14,7 +15,6 @@ import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 
-DEFAULT_URL = "https://mcp.wine-dev.redswimmer.com/mcp"
 DEFAULT_TOKEN_FILE = "~/.config/wine-cellar/dev-token"
 NAME = "Smoke Test Cellars Red"  # every test wine's name starts with this
 
@@ -57,7 +57,10 @@ def anyio_backend():
 
 @pytest.fixture(scope="session")
 def url() -> str:
-    return os.environ.get("WINE_MCP_URL", DEFAULT_URL)
+    value = os.environ.get("WINE_MCP_URL")
+    if not value:
+        pytest.skip("No URL: set WINE_MCP_URL to the deployed McpUrl")
+    return value
 
 
 @pytest.fixture(scope="session")

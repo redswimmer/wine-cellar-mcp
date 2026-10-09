@@ -32,7 +32,7 @@ answers is "have I had this wine, and did I like it?"
 | Embeddings | Amazon Nova Multimodal Embeddings on Bedrock (`amazon.nova-2-multimodal-embeddings-v1:0`), 1024 dimensions | One model for wine text and label photos. |
 | Search | Vector search plus the existing fuzzy match, merged by rank (reciprocal rank fusion) | The standard hybrid search pattern. S3 Vectors has no keyword search, so the merge runs in the Lambda. |
 | IaC | AWS CDK in Python | Same language as the service; deploys from GitHub Actions. |
-| Domain | `mcp.wine.redswimmer.com` (prod), `mcp.wine-dev.redswimmer.com` (dev) | `<role>.<service>` leaves room for `api.wine…` or `app.wine…` later. Records live in the existing `redswimmer.com` hosted zone with an ACM certificate per name. |
+| Domain | One name per stage, set in `cdk.json` (`stages.<stage>.domainName`); this deployment uses `mcp.wine.redswimmer.com` (prod) and `mcp.wine-dev.redswimmer.com` (dev) | `<role>.<service>` leaves room for `api.wine…` or `app.wine…` later. Records live in an existing hosted zone (`zoneName`, `hostedZoneId` in `cdk.json`) with an ACM certificate per name. |
 
 ## Architecture
 
@@ -261,8 +261,8 @@ their wines would share one user ID; give each person their own token.
 Any MCP client that speaks Streamable HTTP and can send an `Authorization`
 header works. To check a deployment end to end without a client, run
 `uv run pytest tests/e2e`. These end-to-end tests call the deployed endpoint
-(`$WINE_MCP_URL`, default dev) with the token in `$WINE_MCP_TOKEN` or
-`~/.config/wine-cellar/dev-token`, skip locally when there is no token, and
+(`$WINE_MCP_URL`, the stack's `McpUrl` output) with the token in `$WINE_MCP_TOKEN` or
+`~/.config/wine-cellar/dev-token`, skip locally when either is missing, and
 delete their test wines. Plain `uv run pytest` runs only the unit tests.
 
 ### Claude Code
@@ -271,7 +271,7 @@ Add the server in local scope, which keeps the token in `~/.claude.json` and
 out of the repo. Don't use `-s project`; that writes the token to `.mcp.json`.
 
 ```
-claude mcp add --transport http wine https://mcp.wine-dev.redswimmer.com/mcp \
+claude mcp add --transport http wine https://<dev-domain>/mcp \
   --header "Authorization: Bearer $(cat ~/.config/wine-cellar/dev-token)"
 claude mcp get wine
 ```
@@ -287,7 +287,7 @@ provider store; the agent config holds only a placeholder:
 
 ```
 export WINE_MCP_TOKEN=$(uv run wine-tokens --stage prod add-user --username andrew --label andrew-nemoclaw)
-nemoclaw <sandbox> mcp add wine --url https://mcp.wine.redswimmer.com/mcp --env WINE_MCP_TOKEN
+nemoclaw <sandbox> mcp add wine --url https://<prod-domain>/mcp --env WINE_MCP_TOKEN
 unset WINE_MCP_TOKEN
 ```
 
@@ -298,4 +298,4 @@ the sandbox needs egress to the S3 endpoint for those uploads.
 
 ## Environment
 
-- Region: `us-east-1`, in the AWS account that holds `redswimmer.com`.
+- Region: `region` in `cdk.json` (`us-east-1` here), in the AWS account that holds the hosted zone. It must offer S3 Vectors and Nova multimodal embeddings.
