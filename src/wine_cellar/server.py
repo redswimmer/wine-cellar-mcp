@@ -1,5 +1,6 @@
 """MCP tool definitions and the HTTP app that serves them."""
 
+import functools
 from collections.abc import Callable
 from datetime import datetime
 from typing import Annotated, Any
@@ -13,7 +14,7 @@ from pydantic import Field
 from starlette.types import ASGIApp
 
 from .auth import USER_ID_STATE_KEY, BearerAuthMiddleware
-from .models import InvalidPhotoError, Upload, Verdict, Wine, photo_added_at, photo_id_of
+from .models import InvalidPhotoError, Upload, Verdict, Wine
 from .service import (
     InvalidPageTokenError,
     InvalidWineError,
@@ -58,6 +59,19 @@ def _unset() -> Any:
     return UNSET
 
 
+def _agent_errors[**P, R](tool: Callable[P, R]) -> Callable[P, R]:
+    """Turn the domain errors in AGENT_ERRORS into tool errors, so the agent gets a message it can act on."""
+
+    @functools.wraps(tool)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return tool(*args, **kwargs)
+        except AGENT_ERRORS as e:
+            raise ToolError(str(e)) from e
+
+    return wrapper
+
+
 def current_user(ctx: Context) -> str:
     """The user this request acts for, as resolved from its bearer token by BearerAuthMiddleware."""
     request = ctx.request_context.request
@@ -70,7 +84,7 @@ def current_user(ctx: Context) -> str:
 
 def _summary(wine: Wine) -> dict[str, Any]:
     data = wine.model_dump(mode="json", exclude={"user_id", "photo_keys"})
-    data["photos"] = [{"photo_id": photo_id_of(k), "added_at": photo_added_at(k).isoformat()} for k in wine.photo_keys]
+    data["photos"] = [{"photo_id": p.photo_id, "added_at": p.added_at.isoformat()} for p in wine.photos]
     data["label"] = wine.label
     return data
 
@@ -79,6 +93,7 @@ def build_server(service: WineService) -> MCPServer:
     mcp = MCPServer(name="wine-cellar", instructions=INSTRUCTIONS)
 
     @mcp.tool()
+    @_agent_errors
     def create_wine(
         ctx: Context,
         name: Annotated[str, Field(description=NAME_DESCRIPTION)],
@@ -93,15 +108,13 @@ def build_server(service: WineService) -> MCPServer:
         off the label yourself; only the name is required, so leave out anything you can't read (and the vintage for
         non-vintage wines). To keep the label photo, call add_photo next.
         """
-        try:
-            wine = service.create_wine(
-                current_user(ctx), name=name, vintage=vintage, varietal=varietal, verdict=verdict, notes=notes
-            )
-        except AGENT_ERRORS as e:
-            raise ToolError(str(e)) from e
+        wine = service.create_wine(
+            current_user(ctx), name=name, vintage=vintage, varietal=varietal, verdict=verdict, notes=notes
+        )
         return {"wine": _summary(wine)}
 
     @mcp.tool(annotations=ToolAnnotations(idempotent_hint=True))
+    @_agent_errors
     def update_wine(
         ctx: Context,
         wine_id: WineId,
@@ -124,12 +137,7 @@ def build_server(service: WineService) -> MCPServer:
         empty a field, e.g. vintage null when the person says it's non-vintage. The name can't be emptied.
         """
         fields = {"name": name, "vintage": vintage, "varietal": varietal, "verdict": verdict, "notes": notes}
-        try:
-            wine = service.update_wine(
-                current_user(ctx), wine_id, **{k: v for k, v in fields.items() if v is not UNSET}
-            )
-        except AGENT_ERRORS as e:
-            raise ToolError(str(e)) from e
+        wine = service.update_wine(current_user(ctx), wine_id, **{k: v for k, v in fields.items() if v is not UNSET})
         return {"wine": _summary(wine)}
 
     def _upload(upload: Upload) -> dict[str, Any]:
@@ -141,6 +149,7 @@ def build_server(service: WineService) -> MCPServer:
         }
 
     @mcp.tool()
+    @_agent_errors
     def add_photo(ctx: Context, wine_id: WineId) -> dict[str, Any]:
         """Add a label photo to a wine: returns a link, and the photo is saved to the wine once uploaded to it.
 
@@ -148,38 +157,32 @@ def build_server(service: WineService) -> MCPServer:
         WebP or GIF up to max_bytes; anything else is discarded. The photo shows in the wine's photos within a few
         seconds.
         """
-        try:
-            return _upload(service.add_photo(current_user(ctx), wine_id))
-        except AGENT_ERRORS as e:
-            raise ToolError(str(e)) from e
+        return _upload(service.add_photo(current_user(ctx), wine_id))
 
     @mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
+    @_agent_errors
     def delete_photo(
         ctx: Context,
         wine_id: WineId,
         photo_id: Annotated[str, Field(description="photo_id from the wine's photos")],
     ) -> dict[str, Any]:
         """Remove a photo from a wine, e.g. one added by mistake. The latest photo has the latest added_at."""
-        try:
-            wine = service.delete_photo(current_user(ctx), wine_id, photo_id)
-        except AGENT_ERRORS as e:
-            raise ToolError(str(e)) from e
+        wine = service.delete_photo(current_user(ctx), wine_id, photo_id)
         return {"wine": _summary(wine)}
 
     @mcp.tool()
+    @_agent_errors
     def upload_search_photo(ctx: Context) -> dict[str, Any]:
         """Get a link for uploading a photo to search with. The photo is used for one search and never saved.
 
         PUT the image file to upload_url (for example `curl -sSf --upload-file label.jpg "<upload_url>"`), then pass
         photo_ref to search_wines. JPEG, PNG, WebP or GIF up to max_bytes.
         """
-        try:
-            upload = service.upload_search_photo(current_user(ctx))
-        except PhotosDisabledError as e:
-            raise ToolError(str(e)) from e
+        upload = service.upload_search_photo(current_user(ctx))
         return {"photo_ref": upload.photo_ref, **_upload(upload)}
 
     @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+    @_agent_errors
     def search_wines(
         ctx: Context,
         query: Annotated[
@@ -201,13 +204,11 @@ def build_server(service: WineService) -> MCPServer:
         """
         if not query.strip() and not photo_ref:
             raise ToolError("Give a query, a photo_ref, or both")
-        try:
-            matches = service.search_wines(current_user(ctx), query, photo_ref=photo_ref, limit=limit)
-        except AGENT_ERRORS as e:
-            raise ToolError(str(e)) from e
+        matches = service.search_wines(current_user(ctx), query, photo_ref=photo_ref, limit=limit)
         return {"matches": [_summary(w) for w in matches]}
 
     @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+    @_agent_errors
     def list_wines(
         ctx: Context,
         verdict: Annotated[Verdict | None, Field(description="Only wines with this verdict")] = None,
@@ -229,37 +230,30 @@ def build_server(service: WineService) -> MCPServer:
         first time yesterday", filter on created_after/created_before. To find wines by description, use
         search_wines.
         """
-        try:
-            wines, token = service.list_wines(
-                current_user(ctx),
-                verdict=verdict,
-                varietal=varietal,
-                created_after=created_after,
-                created_before=created_before,
-                updated_after=updated_after,
-                updated_before=updated_before,
-                limit=limit,
-                next_token=next_token,
-            )
-        except AGENT_ERRORS as e:
-            raise ToolError(str(e)) from e
+        wines, token = service.list_wines(
+            current_user(ctx),
+            verdict=verdict,
+            varietal=varietal,
+            created_after=created_after,
+            created_before=created_before,
+            updated_after=updated_after,
+            updated_before=updated_before,
+            limit=limit,
+            next_token=next_token,
+        )
         return {"wines": [_summary(w) for w in wines], "next_token": token}
 
     @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+    @_agent_errors
     def get_wine(ctx: Context, wine_id: WineId) -> dict[str, Any]:
         """Fetch one wine."""
-        try:
-            return {"wine": _summary(service.get_wine(current_user(ctx), wine_id))}
-        except WineNotFoundError as e:
-            raise ToolError(str(e)) from e
+        return {"wine": _summary(service.get_wine(current_user(ctx), wine_id))}
 
     @mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
+    @_agent_errors
     def delete_wine(ctx: Context, wine_id: WineId) -> dict[str, Any]:
         """Permanently remove a wine. Only use when the person explicitly asks."""
-        try:
-            service.delete_wine(current_user(ctx), wine_id)
-        except WineNotFoundError as e:
-            raise ToolError(str(e)) from e
+        service.delete_wine(current_user(ctx), wine_id)
         return {"deleted": wine_id}
 
     return mcp

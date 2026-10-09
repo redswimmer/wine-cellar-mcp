@@ -15,6 +15,7 @@ from typing import Any
 from .users import UserStore
 
 TOKEN_PREFIX = "wct_"
+TOKEN_PK_PREFIX = "TOKEN#"
 
 
 def hash_token(token: str) -> str:
@@ -22,7 +23,7 @@ def hash_token(token: str) -> str:
 
 
 def _key(token_hash: str) -> dict[str, str]:
-    return {"pk": f"TOKEN#{token_hash}", "sk": "TOKEN"}
+    return {"pk": f"{TOKEN_PK_PREFIX}{token_hash}", "sk": "TOKEN"}
 
 
 @dataclass(frozen=True)
@@ -83,14 +84,14 @@ class TokenStore:
         records: list[TokenRecord] = []
         kwargs: dict[str, Any] = {
             "FilterExpression": "begins_with(pk, :p) AND sk = :s",
-            "ExpressionAttributeValues": {":p": "TOKEN#", ":s": "TOKEN"},
+            "ExpressionAttributeValues": {":p": TOKEN_PK_PREFIX, ":s": "TOKEN"},
         }
         while True:
             resp = self._table.scan(**kwargs)
             for item in resp.get("Items", []):
                 records.append(
                     TokenRecord(
-                        token_hash=item["pk"].removeprefix("TOKEN#"),
+                        token_hash=item["pk"].removeprefix(TOKEN_PK_PREFIX),
                         user_id=item["user_id"],
                         label=item.get("label", ""),
                         created_at=item.get("created_at", ""),
