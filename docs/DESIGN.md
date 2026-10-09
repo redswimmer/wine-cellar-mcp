@@ -1,8 +1,10 @@
 # Wine Cellar Service: Design
 
 A small AWS serverless service that lets an AI agent remember which wines a
-person likes. The agent runs on NemoClaw (OpenClaw) and people talk to it in
-Telegram, by text or by sending a photo of a label.
+person likes. People talk to the agent however that agent allows, by text or
+by sending a photo of a label. The service is agent-agnostic: any MCP client
+can use it, and Claude Code and NemoClaw are covered under
+[Connecting clients](#connecting-clients) as examples.
 
 This is a preference tracker, not an inventory system. The core question it
 answers is "have I had this wine, and did I like it?"
@@ -13,20 +15,20 @@ answers is "have I had this wine, and did I like it?"
 - **Low latency:** text lookups well under a second when warm; photo lookups a
   few seconds, dominated by the model calls.
 - **Easy to maintain:** one CDK app, one Lambda, one table, deployed from CI.
-- **Secured:** only the claw can call the service.
+- **Secured:** only clients holding a valid user token can call the service.
 
 ## Decisions
 
 | Topic | Decision | Why |
 | --- | --- | --- |
-| Interface | One MCP server, no separate REST API | The claw is the only client. A REST API can be added later on top of the same service layer. |
+| Interface | One MCP server, no separate REST API | Agents are the only clients. A REST API can be added later on top of the same service layer. |
 | MCP transport | Streamable HTTP, stateless, JSON responses | Works on Lambda with no sticky sessions. |
 | Hosting | API Gateway HTTP API in front of one Python Lambda (arm64) | Cheapest managed HTTPS front door with custom domains and throttling. |
 | Auth | One API token per user, issued with the `wine-tokens` CLI; only its SHA-256 hash is stored in DynamoDB | The token decides the user, so agents never pass a user ID and can't act for anyone else. No sign-in flow needed. |
 | AgentCore Gateway | Not used for now | Needs an OAuth provider (Cognito) for inbound auth and adds cost for a single client. Can front the server later without code changes. |
-| Users | Every record is keyed by our own server-generated user ID (`usr_<ulid>`), never by a chat platform's ID or a username | IDs are generated and never change; each user also has a unique username for people to read and type. Keeps the server independent of Telegram. Each user has one agent sandbox, configured with that user's token. |
+| Users | Every record is keyed by our own server-generated user ID (`usr_<ulid>`), never by a chat platform's ID or a username | IDs are generated and never change; each user also has a unique username for people to read and type. Keeps the server independent of any chat platform or agent. Each agent a user connects is configured with that user's token. |
 | Storage | DynamoDB on-demand, S3 for photos, S3 Vectors for embeddings | All pay-per-use and serverless. |
-| Label reading | Done by the agent, not the server | The agent's own model can read a label photo and pass the name, vintage and varietal as text, so the server needs no vision model. Revisit if NemoClaw's model can't read images. |
+| Label reading | Done by the agent, not the server | The agent's own model can read a label photo and pass the name, vintage and varietal as text, so the server needs no vision model. An agent whose model can't read images can still search by photo; it just can't fill in the fields. |
 | Embeddings | Amazon Nova Multimodal Embeddings on Bedrock (`amazon.nova-2-multimodal-embeddings-v1:0`), 1024 dimensions | One model for wine text and label photos. |
 | Search | Vector search plus the existing fuzzy match, merged by rank (reciprocal rank fusion) | The standard hybrid search pattern. S3 Vectors has no keyword search, so the merge runs in the Lambda. |
 | IaC | AWS CDK in Python | Same language as the service; deploys from GitHub Actions. |
@@ -35,7 +37,7 @@ answers is "have I had this wine, and did I like it?"
 ## Architecture
 
 ```
-Telegram ──▶ OpenClaw agent ──HTTPS + bearer──▶ API Gateway (HTTP API, custom domain)
+User ──▶ Agent (any MCP client) ──HTTPS + bearer──▶ API Gateway (HTTP API, custom domain)
                                                       │
                                                       ▼
                                           Lambda: MCP server (Python)
@@ -114,7 +116,7 @@ vectors.
 | `get_wine` / `delete_wine` | Fetch or remove one wine. |
 
 No tool takes a user ID. The bearer token identifies the user, so the user is
-fixed by how the sandbox was configured, not by anything the agent says.
+fixed by the token the agent was configured with, not by anything it says.
 
 Photos never travel inside an MCP request. The agent PUTs the image to a
 pre-signed S3 URL (valid 15 minutes), e.g.
@@ -132,9 +134,8 @@ pre-signed S3 URL (valid 15 minutes), e.g.
   back as a tool error telling the agent what to do. The photo is deleted after
   the search and never saved; a lifecycle rule removes any left after a day.
 
-This also keeps photos clear of NemoClaw's 131,072-byte cap on MCP request
-bodies. The NemoClaw sandbox will need egress to the S3 endpoint for uploads
-(step 5).
+This also keeps photos clear of any cap a client puts on MCP request bodies.
+The agent needs network access to the S3 endpoint to upload.
 
 ## Search flow
 
@@ -201,8 +202,8 @@ with `uv run lint-imports`.
 ## Build steps
 
 The MCP server is built and dialed in with Claude Code as the agent before any
-other client. OpenClaw is a client like Claude Code, so connecting it is the
-last step and needs no server changes.
+other client. Every other agent is a client like Claude Code, so connecting
+one is the last step and needs no server changes.
 
 1. Project board and this design. (done)
 2. Core MCP service: CDK app, storage, domain, text tools, per-user tokens,
@@ -211,7 +212,7 @@ last step and needs no server changes.
    `search_wines`, photos and photo search, then dial-in with Claude Code.
 4. Release to prod: rename to wine-cellar-mcp, e2e tests in the Deploy
    workflow, first prod deploy.
-5. Connect NemoClaw and test end to end from Telegram.
+5. Connect other agents (NemoClaw first) and test end to end.
 
 ## Users and tokens
 
@@ -222,7 +223,7 @@ ID stays the key for their data. A token can only be issued for a user that
 exists.
 
 ```
-uv run wine-tokens --stage dev add-user --username andrew --label andrew-nemoclaw   # prints the first token
+uv run wine-tokens --stage dev add-user --username andrew --label andrew-agent   # prints the first token
 uv run wine-tokens --stage dev list-users
 uv run wine-tokens --stage dev create-token --user andrew --label andrew-laptop
 uv run wine-tokens --stage dev list-tokens
@@ -252,8 +253,8 @@ supported yet; if it's ever needed it should only apply to deactivated users.
 The user ID is never sent by the client. Knowing someone's ID doesn't let you
 act as them; only their token does.
 
-One sandbox maps to one user. If several people ever share one sandbox, their
-wines would share one user ID; give each person their own sandbox and token.
+A token maps to one user. If several people ever share one agent and token,
+their wines would share one user ID; give each person their own token.
 
 ## Connecting clients
 
@@ -278,7 +279,7 @@ claude mcp get wine
 Start a new `claude` session in the same folder and talk to it normally; it
 picks the tools from their descriptions.
 
-### OpenClaw
+### NemoClaw (OpenClaw)
 
 NemoClaw supports remote MCP servers over HTTPS with Streamable HTTP and puts
 the token in the `Authorization` header. The raw token stays in OpenShell's
@@ -291,7 +292,9 @@ unset WINE_MCP_TOKEN
 ```
 
 NemoClaw rejects URLs with query strings, so the token can only go in the
-header. That matches the bearer check above.
+header. That matches the bearer check above. NemoClaw caps MCP request bodies
+at 131,072 bytes, which photo uploads avoid because they go straight to S3, and
+the sandbox needs egress to the S3 endpoint for those uploads.
 
 ## Environment
 

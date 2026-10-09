@@ -22,7 +22,7 @@ HOST = "mcp.wine-dev.redswimmer.com"
 @pytest.fixture
 def tokens(table):
     users, store = UserStore(table), TokenStore(table)
-    return {name: store.create(users.create(name).user_id, f"{name}-claw") for name in ("andrew", "sam")}
+    return {name: store.create(users.create(name).user_id, f"{name}-agent") for name in ("andrew", "sam")}
 
 
 @pytest.fixture

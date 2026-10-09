@@ -1,6 +1,6 @@
 """API tokens that identify which user a caller acts for.
 
-Each agent sandbox gets its own token, and the token alone decides the user, so the agent never
+Each agent a user connects gets its own token, and the token alone decides the user, so the agent never
 supplies a user ID. Only a SHA-256 hash of each token is stored; tokens are 256-bit random values,
 so a plain hash is enough to make the stored form useless to someone reading the table.
 """

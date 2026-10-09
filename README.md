@@ -1,8 +1,9 @@
 # wine-cellar-mcp
 
-An MCP server that lets an AI agent remember which wines you like. Built for a
-NemoClaw (OpenClaw) agent that you talk to in Telegram, running on AWS
-serverless (API Gateway, Lambda, DynamoDB).
+An MCP server that lets an AI agent remember which wines you like, running on
+AWS serverless (API Gateway, Lambda, DynamoDB). Any agent that speaks MCP over
+Streamable HTTP can use it, such as Claude Code or a NemoClaw agent you chat
+with in Telegram; see [Connecting clients](docs/DESIGN.md#connecting-clients).
 
 - Design: [docs/DESIGN.md](docs/DESIGN.md)
 - Deploying: [docs/DEPLOY.md](docs/DEPLOY.md)
