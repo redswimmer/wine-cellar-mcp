@@ -19,6 +19,7 @@ wine-tokens = "wine_cellar.admin:main"
 dev = [
     "aws-cdk-lib==2.272.0",
     "constructs>=10.8.1",
+    "import-linter>=2.15",
     "moto>=5.2.3",
     "pytest>=9.1.1",
     "ruff>=0.16.10",
@@ -54,3 +55,46 @@ include = ["infra/**"]
 
 [tool.ty.overrides.rules]
 invalid-argument-type = "ignore"
+
+# Architecture rules, checked in CI by `uv run lint-imports`.
+[tool.importlinter]
+root_package = "wine_cellar"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Layers: entry points > wiring > transport > service > stores > domain"
+type = "layers"
+containers = ["wine_cellar"]
+layers = [
+    "handler | photo_handler | admin",
+    "bootstrap",
+    "server | lambda_adapter",
+    "service",
+    "tokens",
+    "users",
+    "repository | photos | vectors | search",
+    "auth | config",
+    "models",
+]
+
+[[tool.importlinter.contracts]]
+name = "Only entry points and bootstrap create AWS clients"
+type = "forbidden"
+source_modules = [
+    "wine_cellar.server",
+    "wine_cellar.service",
+    "wine_cellar.models",
+    "wine_cellar.search",
+    "wine_cellar.repository",
+    "wine_cellar.vectors",
+    "wine_cellar.users",
+    "wine_cellar.tokens",
+]
+forbidden_modules = ["boto3"]
+
+[[tool.importlinter.contracts]]
+name = "The MCP server talks to the service, not to stores"
+type = "forbidden"
+source_modules = ["wine_cellar.server"]
+forbidden_modules = ["wine_cellar.photos", "wine_cellar.repository", "wine_cellar.vectors"]
+allow_indirect_imports = true

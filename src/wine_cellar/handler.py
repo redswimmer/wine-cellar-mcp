@@ -1,41 +1,9 @@
-"""Lambda entry points: the MCP server, and the S3 event for photos uploaded to a wine."""
-
-from typing import Any
-from urllib.parse import unquote_plus
+"""Lambda entry point for the MCP server. Built once per cold start; see bootstrap for the wiring."""
 
 import boto3
-from botocore.config import Config
 
+from .bootstrap import build_mcp_handler
 from .config import Settings
-from .lambda_adapter import make_handler
-from .photos import PhotoStore
-from .repository import WineRepository
-from .server import build_app
-from .service import WineService
-from .tokens import TokenStore
-from .vectors import Embedder, WinePhotoIndex, WineTextIndex
-
-
-def _service(settings: Settings, table) -> WineService:
-    if not settings.vector_bucket:
-        return WineService(WineRepository(table))
-    s3vectors, embedder = boto3.client("s3vectors"), Embedder(boto3.client("bedrock-runtime"))
-    return WineService(
-        WineRepository(table),
-        WineTextIndex(s3vectors, embedder, bucket=settings.vector_bucket, index=settings.text_index),
-        photos=PhotoStore(boto3.client("s3", config=Config(signature_version="s3v4")), settings.photo_bucket)
-        if settings.photo_bucket
-        else None,
-        photo_index=WinePhotoIndex(s3vectors, embedder, bucket=settings.vector_bucket, index=settings.photo_index),
-    )
-
 
 settings = Settings.from_env()
-_table = boto3.resource("dynamodb").Table(settings.table_name)
-_wines = _service(settings, _table)
-handler = make_handler(*build_app(_wines, TokenStore(_table).resolve, settings.allowed_hosts))
-
-
-def photo_handler(event: dict[str, Any], _context: Any) -> None:
-    for record in event.get("Records", []):
-        _wines.photo_uploaded(unquote_plus(record["s3"]["object"]["key"]))
+handler = build_mcp_handler(settings, boto3.resource("dynamodb").Table(settings.table_name))

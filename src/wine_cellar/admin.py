@@ -8,11 +8,10 @@ import sys
 
 import boto3
 
-from .photos import PhotoStore
-from .repository import WineRepository
+from .bootstrap import build_service
+from .config import Settings
 from .tokens import TokenStore
 from .users import UserStore
-from .vectors import Embedder, WinePhotoIndex, WineTextIndex
 
 
 def _stack_outputs(stage: str) -> dict[str, str]:
@@ -85,22 +84,17 @@ def main(argv: list[str] | None = None) -> int:
         r = tokens.revoke(args.hash_prefix)
         print(f"Revoked {r.token_hash[:12]} ({r.user_id}, {r.label}). Takes effect within a minute.")
     elif args.command == "reindex":
-        s3vectors = boto3.client("s3vectors", region_name=region)
-        embedder = Embedder(boto3.client("bedrock-runtime", region_name=region))
-        bucket = outputs["VectorBucketName"]
-        text_index = WineTextIndex(s3vectors, embedder, bucket=bucket, index=outputs["TextIndexName"])
-        photo_index = WinePhotoIndex(s3vectors, embedder, bucket=bucket, index=outputs["PhotoIndexName"])
-        photos = PhotoStore(boto3.client("s3", region_name=region), outputs["PhotoBucketName"])
-        repo = WineRepository(table)
+        settings = Settings(
+            table_name=outputs["TableName"],
+            vector_bucket=outputs["VectorBucketName"],
+            text_index=outputs["TextIndexName"],
+            photo_index=outputs["PhotoIndexName"],
+            photo_bucket=outputs["PhotoBucketName"],
+        )
+        service = build_service(settings, table, region)
         for u in users.list():
-            wines = repo.list_for_user(u.user_id)
-            for wine in wines:
-                text_index.upsert(wine)
-                for key in wine.photo_keys:
-                    photo = photos.get(key)
-                    photo_index.upsert(key, photo.data, photo.format, user_id=wine.user_id, wine_id=wine.wine_id)
-            n_photos = sum(len(w.photo_keys) for w in wines)
-            print(f"{u.username}: {len(wines)} wines and {n_photos} photos indexed", file=sys.stderr)
+            n_wines, n_photos = service.reindex(u.user_id)
+            print(f"{u.username}: {n_wines} wines and {n_photos} photos indexed", file=sys.stderr)
     return 0
 
 

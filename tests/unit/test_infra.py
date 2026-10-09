@@ -115,7 +115,7 @@ def test_lambda_can_use_vectors_and_only_the_embedding_model(asset_dir):
 
 def test_photos_uploaded_to_a_wine_trigger_the_photo_function(asset_dir):
     t = _service(asset_dir)
-    t.has_resource_properties("AWS::Lambda::Function", {"Handler": "wine_cellar.handler.photo_handler"})
+    t.has_resource_properties("AWS::Lambda::Function", {"Handler": "wine_cellar.photo_handler.handler"})
     t.has_resource_properties(
         "Custom::S3BucketNotifications",
         {

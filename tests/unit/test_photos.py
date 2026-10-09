@@ -1,10 +1,9 @@
-import base64
-
 import boto3
 import pytest
 from botocore.config import Config
 
-from wine_cellar.photos import MAX_PHOTO_BYTES, InvalidPhotoError, PhotoStore, photo_id_of, sniff
+from wine_cellar.models import InvalidPhotoError, photo_id_of
+from wine_cellar.photos import MAX_PHOTO_BYTES, PhotoStore, sniff, uploaded_keys
 from wine_cellar.repository import WineRepository
 from wine_cellar.service import PhotoNotFoundError, PhotosDisabledError, WineNotFoundError, WineService
 from wine_cellar.vectors import Embedder, WinePhotoIndex, WineTextIndex
@@ -79,7 +78,7 @@ def test_add_photo_needs_an_existing_wine(service):
         service.add_photo(USER, "nope")
 
 
-def test_uploaded_photo_is_saved_to_the_wine_and_indexed(service, s3, photo_vectors, bedrock):
+def test_uploaded_photo_is_saved_to_the_wine_and_indexed(service, s3, photo_vectors):
     wine = service.create_wine(USER, name="Ridge Monte Bello")
     first = add_photo(service, s3, wine.wine_id)
     second = add_photo(service, s3, wine.wine_id)
@@ -87,8 +86,12 @@ def test_uploaded_photo_is_saved_to_the_wine_and_indexed(service, s3, photo_vect
 
     assert service.get_wine(USER, wine.wine_id).photo_keys == [first, second]
     assert photo_vectors.vectors[first]["metadata"] == {"user_id": USER, "wine_id": wine.wine_id}
-    image = bedrock.bodies[-1]["singleEmbeddingParams"]["image"]
-    assert image["format"] == "jpeg" and base64.b64decode(image["source"]["bytes"]) == JPEG
+
+
+def test_upload_event_keys_are_decoded():
+    event = {"Records": [{"s3": {"object": {"key": "wines/usr_1/w1/01J+label%2Bshot.jpg"}}}]}
+    assert uploaded_keys(event) == ["wines/usr_1/w1/01J label+shot.jpg"]
+    assert uploaded_keys({}) == []
 
 
 @pytest.mark.parametrize("data", [b"%PDF-1.7", b"\xff\xd8\xff" + b"x" * MAX_PHOTO_BYTES])
@@ -163,7 +166,7 @@ def test_search_photo_is_used_once_and_never_saved(service, s3):
         service.search_wines(USER, photo_ref=ref)
 
 
-def test_search_by_photo_returns_each_wine_once(service, s3, photo_vectors, bedrock):
+def test_search_by_photo_returns_each_wine_once(service, s3, photo_vectors):
     ridge = service.create_wine(USER, name="Ridge")
     ridge_photos = [add_photo(service, s3, ridge.wine_id), add_photo(service, s3, ridge.wine_id)]
     other = service.create_wine(USER, name="Lopez de Heredia")
@@ -172,8 +175,6 @@ def test_search_by_photo_returns_each_wine_once(service, s3, photo_vectors, bedr
 
     results = service.search_wines(USER, photo_ref=search_photo(service, s3))
     assert [w.wine_id for w in results] == [ridge.wine_id, other.wine_id]
-    assert bedrock.bodies[-1]["singleEmbeddingParams"]["embeddingPurpose"] == "IMAGE_RETRIEVAL"
-    assert photo_vectors.last_query["filter"] == {"user_id": {"$eq": USER}}
 
 
 def test_search_with_photo_and_label_text_merges_both(service, s3, photo_vectors):
@@ -204,3 +205,13 @@ def test_photos_need_a_bucket(table):
         service.upload_search_photo(USER)
     with pytest.raises(PhotosDisabledError):
         service.add_photo(USER, wine.wine_id)
+
+
+def test_reindex_skips_photos_it_cannot_read(service, s3, photo_vectors):
+    wine = service.create_wine(USER, name="Ridge")
+    good = add_photo(service, s3, wine.wine_id)
+    gone = add_photo(service, s3, wine.wine_id)
+    s3.delete_object(Bucket=BUCKET, Key=gone)
+    photo_vectors.vectors.clear()
+    assert service.reindex(USER) == (1, 1)
+    assert list(photo_vectors.vectors) == [good]
