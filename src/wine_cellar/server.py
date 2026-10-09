@@ -15,7 +15,13 @@ from starlette.types import ASGIApp
 from .auth import USER_ID_STATE_KEY, BearerAuthMiddleware
 from .models import Verdict, Wine
 from .photos import MAX_PHOTO_BYTES, UPLOAD_URL_SECONDS, InvalidPhotoError, Upload, photo_added_at, photo_id_of
-from .service import PhotoNotFoundError, PhotosDisabledError, WineNotFoundError, WineService
+from .service import (
+    InvalidPageTokenError,
+    PhotoNotFoundError,
+    PhotosDisabledError,
+    WineNotFoundError,
+    WineService,
+)
 
 INSTRUCTIONS = """\
 Remembers which wines the user has tried and what they thought of them.
@@ -31,7 +37,7 @@ PhotoRef = Annotated[
     str | None, Field(description="photo_ref from upload_search_photo, after uploading the photo to its upload_url")
 ]
 # Mistakes the agent can fix (unknown wine, bad or missing upload, photos off) come back as tool errors.
-AGENT_ERRORS = (WineNotFoundError, PhotoNotFoundError, InvalidPhotoError, PhotosDisabledError)
+AGENT_ERRORS = (WineNotFoundError, PhotoNotFoundError, InvalidPhotoError, PhotosDisabledError, InvalidPageTokenError)
 
 
 class _Unset:
@@ -200,26 +206,34 @@ def build_server(service: WineService) -> MCPServer:
         created_before: Annotated[datetime | None, Field(description="First recorded at or before (UTC)")] = None,
         updated_after: Annotated[datetime | None, Field(description="Last changed at or after (UTC)")] = None,
         updated_before: Annotated[datetime | None, Field(description="Last changed at or before (UTC)")] = None,
-        limit: Annotated[
-            int, Field(ge=1, le=100, description="Most wines to return; total says how many matched")
-        ] = 25,
+        limit: Annotated[int, Field(ge=1, le=100, description="Most wines to return in this page")] = 25,
+        next_token: Annotated[
+            str | None, Field(description="next_token from the previous call, to get the next page")
+        ] = None,
     ) -> dict[str, Any]:
-        """List recorded wines, most recently updated first, optionally filtered.
+        """List recorded wines, most recently recorded first, optionally filtered.
+
+        A next_token in the result means there are more wines; pass it back with the same filters to get them.
 
         Dates are when a wine was first recorded (created) and last changed (updated). For "the wine I tried for the
         first time yesterday", filter on created_after/created_before. To find wines by description, use
         search_wines.
         """
-        wines = service.list_wines(
-            current_user(ctx),
-            verdict=verdict,
-            varietal=varietal,
-            created_after=created_after,
-            created_before=created_before,
-            updated_after=updated_after,
-            updated_before=updated_before,
-        )
-        return {"total": len(wines), "wines": [_summary(w) for w in wines[:limit]]}
+        try:
+            wines, token = service.list_wines(
+                current_user(ctx),
+                verdict=verdict,
+                varietal=varietal,
+                created_after=created_after,
+                created_before=created_before,
+                updated_after=updated_after,
+                updated_before=updated_before,
+                limit=limit,
+                next_token=next_token,
+            )
+        except AGENT_ERRORS as e:
+            raise ToolError(str(e)) from e
+        return {"wines": [_summary(w) for w in wines], "next_token": token}
 
     @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
     def get_wine(ctx: Context, wine_id: WineId) -> dict[str, Any]:

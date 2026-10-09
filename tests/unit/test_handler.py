@@ -159,9 +159,9 @@ def test_token_decides_the_user(handler, tokens):
 
     listing = _rpc("tools/call", {"name": "list_wines", "arguments": {}})
     _, mine = _call(handler, listing)
-    assert mine["result"]["structuredContent"]["total"] == 1
+    assert len(mine["result"]["structuredContent"]["wines"]) == 1
     _, theirs = _call(handler, listing, token=tokens["sam"])
-    assert theirs["result"]["structuredContent"]["total"] == 0
+    assert theirs["result"]["structuredContent"]["wines"] == []
 
 
 def test_deactivated_user_is_rejected(table, tokens, monkeypatch):
