@@ -1,4 +1,4 @@
-# wine-cellar-service
+# wine-cellar-mcp
 
 An MCP server that lets an AI agent remember which wines you like. Built for a
 NemoClaw (OpenClaw) agent that you talk to in Telegram, running on AWS

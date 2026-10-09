@@ -162,7 +162,7 @@ def test_prod_retains_data_and_dev_does_not(asset_dir):
 
 def test_oidc_role_trusts_only_repo_environments():
     app = cdk.App()
-    prefix = "repo:redswimmer@38088099/wine-cellar-service@1410527756"
+    prefix = "repo:redswimmer@38088099/wine-cellar-mcp@1410527756"
     stack = GithubOidcStack(app, "O", env=ENV, sub_prefix=prefix, environments=["dev", "prod"])
     Template.from_stack(stack).has_resource_properties(
         "AWS::IAM::Role",
