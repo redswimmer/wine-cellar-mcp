@@ -1,5 +1,5 @@
 [project]
-name = "wine-cellar-service"
+name = "wine-cellar-mcp"
 version = "0.1.0"
 description = "Wine preference MCP server for agents, on AWS serverless"
 readme = "README.md"

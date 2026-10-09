@@ -51,10 +51,10 @@ error means it's time to run `aws sso login` again.
    Note the `DeployRoleArn` output.
 
    The role trusts GitHub's immutable OIDC subject for this repo
-   (`repo:redswimmer@38088099/wine-cellar-service@1410527756:environment:<env>`),
+   (`repo:redswimmer@38088099/wine-cellar-mcp@1410527756:environment:<env>`),
    which pins the owner and repo by ID. If the repo's subject format ever
    changes, check it with
-   `gh api repos/redswimmer/wine-cellar-service/actions/oidc/customization/sub`
+   `gh api repos/redswimmer/wine-cellar-mcp/actions/oidc/customization/sub`
    and pass `-c githubSubPrefix=<sub_claim_prefix>`.
 
 4. **Configure GitHub** (repo Settings):

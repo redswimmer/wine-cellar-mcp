@@ -1348,7 +1348,7 @@ wheels = [
 ]
 
 [[package]]
-name = "wine-cellar-service"
+name = "wine-cellar-mcp"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

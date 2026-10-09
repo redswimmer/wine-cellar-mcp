@@ -17,9 +17,9 @@ from infra.stacks.service_stack import DomainConfig, ServiceConfig, WineCellarSe
 
 DOMAINS = {"dev": "mcp.wine-dev.redswimmer.com", "prod": "mcp.wine.redswimmer.com"}
 # The repo uses GitHub's immutable OIDC subjects, which pin owner and repo by ID
-# (`gh api repos/redswimmer/wine-cellar-service/actions/oidc/customization/sub` shows the prefix).
-# A renamed or re-created repo with the same name can't assume the deploy role.
-GITHUB_SUB_PREFIX = "repo:redswimmer@38088099/wine-cellar-service@1410527756"
+# (`gh api repos/redswimmer/wine-cellar-mcp/actions/oidc/customization/sub` shows the prefix).
+# The subject still includes the repo name, so renaming the repo means redeploying this stack.
+GITHUB_SUB_PREFIX = "repo:redswimmer@38088099/wine-cellar-mcp@1410527756"
 
 
 def main() -> None:
