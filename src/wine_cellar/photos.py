@@ -9,6 +9,7 @@ Images never travel inside an MCP request; agents PUT them straight to S3 with a
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from botocore.exceptions import ClientError
@@ -62,6 +63,15 @@ def sniff(data: bytes) -> Photo:
         if data.startswith(signature):
             return Photo(data, fmt)
     raise InvalidPhotoError("The upload isn't a JPEG, PNG, WebP or GIF image. Upload the photo itself.")
+
+
+def photo_id_of(key: str) -> str:
+    """A photo's id: the ULID at the end of its key, which also records when it was added."""
+    return key.rsplit("/", 1)[-1].split(".", 1)[0]
+
+
+def photo_added_at(key: str) -> datetime:
+    return ULID.from_str(photo_id_of(key)).datetime
 
 
 def wine_photo_owner(key: str) -> tuple[str, str] | None:

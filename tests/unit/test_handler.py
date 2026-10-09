@@ -99,10 +99,11 @@ def test_initialize_and_list_tools(handler):
     assert status == 200, body
     names = {t["name"] for t in body["result"]["tools"]}
     assert names == {
-        "save_wine",
+        "create_wine",
+        "update_wine",
         "add_photo",
+        "delete_photo",
         "upload_search_photo",
-        "add_tasting",
         "search_wines",
         "list_wines",
         "get_wine",
@@ -110,12 +111,15 @@ def test_initialize_and_list_tools(handler):
     }
 
 
-def test_save_then_search_over_http(handler):
-    args = {"producer": "Ridge", "name": "Monte Bello", "vintage": 2019, "verdict": "love"}
-    status, body = _call(handler, _rpc("tools/call", {"name": "save_wine", "arguments": args}))
+def test_create_update_then_search_over_http(handler):
+    args = {"name": "Ridge Monte Bello", "vintage": 2019, "verdict": "like"}
+    status, body = _call(handler, _rpc("tools/call", {"name": "create_wine", "arguments": args}))
     assert status == 200, body
     assert not body["result"].get("isError"), body
-    assert body["result"]["structuredContent"]["created"] is True
+    wine_id = body["result"]["structuredContent"]["wine"]["wine_id"]
+    update = {"wine_id": wine_id, "verdict": "love", "vintage": None}
+    status, body = _call(handler, _rpc("tools/call", {"name": "update_wine", "arguments": update}))
+    assert not body["result"].get("isError"), body
 
     status, body = _call(
         handler,
@@ -123,7 +127,7 @@ def test_save_then_search_over_http(handler):
     )
     matches = body["result"]["structuredContent"]["matches"]
     assert matches[0]["verdict"] == "love"
-    assert matches[0]["label"] == "Ridge Monte Bello 2019"
+    assert matches[0]["label"] == "Ridge Monte Bello"
 
 
 def test_unknown_wine_is_a_tool_error(handler):
@@ -150,7 +154,7 @@ def test_tools_do_not_ask_for_a_user_id(handler):
 
 
 def test_token_decides_the_user(handler, tokens):
-    save = _rpc("tools/call", {"name": "save_wine", "arguments": {"producer": "Ridge", "name": "Monte Bello"}})
+    save = _rpc("tools/call", {"name": "create_wine", "arguments": {"name": "Ridge Monte Bello"}})
     assert _call(handler, save)[0] == 200
 
     listing = _rpc("tools/call", {"name": "list_wines", "arguments": {}})

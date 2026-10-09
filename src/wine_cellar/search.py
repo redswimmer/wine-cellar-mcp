@@ -9,7 +9,7 @@ from .models import Wine
 
 
 def score(query: str, wine: Wine) -> float:
-    """0-100 similarity between free text and a wine's label fields."""
+    """0-100 similarity between free text and a wine's name, vintage and varietal."""
     text = wine.search_text
     return max(
         fuzz.token_set_ratio(query, text, processor=utils.default_process),
@@ -35,15 +35,3 @@ def fuse(rankings: list[list[str]], *, k: int = 60) -> list[str]:
         for rank, item in enumerate(ranking, start=1):
             scores[item] = scores.get(item, 0.0) + 1 / (k + rank)
     return sorted(scores, key=lambda item: scores[item], reverse=True)
-
-
-def find_same_wine(candidate: Wine, wines: list[Wine]) -> Wine | None:
-    """The existing record for the same producer, name and vintage, if any."""
-    target = " ".join(p for p in [candidate.producer, candidate.name] if p)
-    for wine in wines:
-        if wine.vintage != candidate.vintage:
-            continue
-        existing = " ".join(p for p in [wine.producer, wine.name] if p)
-        if fuzz.token_sort_ratio(target, existing, processor=utils.default_process) >= 90:
-            return wine
-    return None

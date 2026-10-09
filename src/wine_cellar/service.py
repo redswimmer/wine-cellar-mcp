@@ -2,13 +2,14 @@
 
 import logging
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
+from typing import Any
 
 from ulid import ULID
 
 from . import search
-from .models import Style, Tasting, Verdict, Wine
-from .photos import InvalidPhotoError, PhotoStore, Upload, wine_photo_owner
+from .models import Verdict, Wine
+from .photos import InvalidPhotoError, PhotoStore, Upload, photo_id_of, wine_photo_owner
 from .repository import WineRepository
 from .vectors import WinePhotoIndex, WineTextIndex
 
@@ -29,6 +30,10 @@ def _best_effort[T](action: Callable[[], T], what: str) -> T | None:
 
 
 class PhotosDisabledError(RuntimeError):
+    pass
+
+
+class PhotoNotFoundError(LookupError):
     pass
 
 
@@ -57,58 +62,35 @@ class WineService:
         if text_index is not None:
             _best_effort(lambda: text_index.upsert(wine), f"Text vector upsert for wine {wine.wine_id}")
 
-    def save_wine(
+    def create_wine(
         self,
         user_id: str,
         *,
-        producer: str,
-        name: str = "",
+        name: str,
         vintage: int | None = None,
-        region: str = "",
-        country: str = "",
-        varietals: list[str] | None = None,
-        style: Style | None = None,
+        varietal: str = "",
         verdict: Verdict | None = None,
-        rating: int | None = None,
         notes: str = "",
-    ) -> tuple[Wine, bool]:
-        """Create a wine, or update the matching one. Returns the wine and whether it was new."""
-        candidate = Wine(
+    ) -> Wine:
+        wine = Wine(
             wine_id=str(ULID()),
             user_id=user_id,
-            producer=producer.strip(),
             name=name.strip(),
             vintage=vintage,
-            region=region.strip(),
-            country=country.strip(),
-            varietals=varietals or [],
-            style=style,
+            varietal=varietal.strip(),
             verdict=verdict,
-            rating=rating,
             notes=notes.strip(),
         )
-        existing = search.find_same_wine(candidate, self._repo.list_for_user(user_id))
-        if existing is None:
-            self._save(candidate)
-            return candidate, True
+        self._save(wine)
+        return wine
 
-        # Only overwrite fields the caller actually supplied.
-        updates = {
-            k: v
-            for k, v in {
-                "region": candidate.region,
-                "country": candidate.country,
-                "varietals": candidate.varietals,
-                "style": style,
-                "verdict": verdict,
-                "rating": rating,
-                "notes": candidate.notes,
-            }.items()
-            if v not in (None, "", [])
-        }
-        updated = existing.model_copy(update={**updates, "updated_at": datetime.now(UTC)})
+    def update_wine(self, user_id: str, wine_id: str, **changes: Any) -> Wine:
+        """Partial update: only the given fields change, and a field given as None is emptied."""
+        wine = self.get_wine(user_id, wine_id)
+        changes = {k: _empty(k) if v is None else v.strip() if type(v) is str else v for k, v in changes.items()}
+        updated = Wine.model_validate({**wine.model_dump(), **changes, "updated_at": datetime.now(UTC)})
         self._save(updated)
-        return updated, False
+        return updated
 
     def add_photo(self, user_id: str, wine_id: str) -> Upload:
         """An upload link that saves a photo to this wine. `photo_uploaded` finishes the job once the file lands."""
@@ -150,25 +132,20 @@ class WineService:
         if self._photo_index is not None:
             self._photo_index.upsert(key, photo.data, photo.format, user_id=user_id, wine_id=wine_id)
 
-    def add_tasting(
-        self,
-        user_id: str,
-        wine_id: str,
-        *,
-        notes: str = "",
-        verdict: Verdict | None = None,
-        tasted_on: date | None = None,
-        where: str = "",
-    ) -> Wine:
+    def delete_photo(self, user_id: str, wine_id: str, photo_id: str) -> Wine:
         wine = self.get_wine(user_id, wine_id)
-        tasting = Tasting(tasted_on=tasted_on or date.today(), verdict=verdict, notes=notes.strip(), where=where)
-        update: dict[str, object] = {"tastings": [*wine.tastings, tasting], "updated_at": datetime.now(UTC)}
-        if verdict is not None:
-            update["verdict"] = verdict
-        if notes.strip():
-            update["notes"] = notes.strip()
-        updated = wine.model_copy(update=update)
-        self._save(updated)
+        key = next((k for k in wine.photo_keys if photo_id_of(k) == photo_id), None)
+        if key is None:
+            raise PhotoNotFoundError(f"Wine {wine_id} has no photo {photo_id}")
+        updated = wine.model_copy(
+            update={"photo_keys": [k for k in wine.photo_keys if k != key], "updated_at": datetime.now(UTC)}
+        )
+        self._repo.put(updated)
+        photo_index, photos = self._photo_index, self._photos
+        if photo_index is not None:
+            _best_effort(lambda: photo_index.delete([key]), f"Photo vector delete for {key}")
+        if photos is not None:
+            _best_effort(lambda: photos.delete([key]), f"Photo delete for {key}")
         return updated
 
     def get_wine(self, user_id: str, wine_id: str) -> Wine:
@@ -222,17 +199,32 @@ class WineService:
         user_id: str,
         *,
         verdict: Verdict | None = None,
-        style: Style | None = None,
-        region: str | None = None,
         varietal: str | None = None,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+        updated_after: datetime | None = None,
+        updated_before: datetime | None = None,
     ) -> list[Wine]:
+        """The user's wines, most recently updated first. Date bounds are inclusive; naive datetimes are UTC."""
         wines = self._repo.list_for_user(user_id)
         if verdict:
             wines = [w for w in wines if w.verdict == verdict]
-        if style:
-            wines = [w for w in wines if w.style == style]
-        if region:
-            wines = [w for w in wines if region.lower() in f"{w.region} {w.country}".lower()]
         if varietal:
-            wines = [w for w in wines if any(varietal.lower() in v.lower() for v in w.varietals)]
+            wines = [w for w in wines if varietal.lower() in w.varietal.lower()]
+        for field, after, before in [
+            ("created_at", created_after, created_before),
+            ("updated_at", updated_after, updated_before),
+        ]:
+            if after:
+                wines = [w for w in wines if getattr(w, field) >= _utc(after)]
+            if before:
+                wines = [w for w in wines if getattr(w, field) <= _utc(before)]
         return sorted(wines, key=lambda w: w.updated_at, reverse=True)
+
+
+def _empty(field: str) -> Any:
+    return Wine.model_fields[field].get_default()
+
+
+def _utc(moment: datetime) -> datetime:
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
