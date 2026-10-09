@@ -1,5 +1,7 @@
 """Business logic behind the MCP tools."""
 
+import base64
+import binascii
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -27,6 +29,10 @@ def _best_effort[T](action: Callable[[], T], what: str) -> T | None:
     except Exception:
         log.exception("%s failed", what)
         return None
+
+
+class InvalidPageTokenError(ValueError):
+    pass
 
 
 class PhotosDisabledError(RuntimeError):
@@ -204,22 +210,44 @@ class WineService:
         created_before: datetime | None = None,
         updated_after: datetime | None = None,
         updated_before: datetime | None = None,
-    ) -> list[Wine]:
-        """The user's wines, most recently updated first. Date bounds are inclusive; naive datetimes are UTC."""
-        wines = self._repo.list_for_user(user_id)
-        if verdict:
-            wines = [w for w in wines if w.verdict == verdict]
-        if varietal:
-            wines = [w for w in wines if varietal.lower() in w.varietal.lower()]
-        for field, after, before in [
-            ("created_at", created_after, created_before),
-            ("updated_at", updated_after, updated_before),
-        ]:
-            if after:
-                wines = [w for w in wines if getattr(w, field) >= _utc(after)]
-            if before:
-                wines = [w for w in wines if getattr(w, field) <= _utc(before)]
-        return sorted(wines, key=lambda w: w.updated_at, reverse=True)
+        limit: int = 25,
+        next_token: str | None = None,
+    ) -> tuple[list[Wine], str | None]:
+        """One page of the user's wines, newest first, and the token for the next page (None on the last page).
+
+        Filters run on each DynamoDB page, so a filtered page keeps reading until it has `limit` wines or the
+        wines run out. Date bounds are inclusive; naive datetimes are UTC.
+        """
+
+        def matches(w: Wine) -> bool:
+            return (
+                (not verdict or w.verdict == verdict)
+                and (not varietal or varietal.lower() in w.varietal.lower())
+                and (not created_after or w.created_at >= _utc(created_after))
+                and (not created_before or w.created_at <= _utc(created_before))
+                and (not updated_after or w.updated_at >= _utc(updated_after))
+                and (not updated_before or w.updated_at <= _utc(updated_before))
+            )
+
+        wines: list[Wine] = []
+        after = _decode_token(next_token) if next_token else None
+        while True:
+            # Read only as many as the page still needs, so the cursor lands on the last wine returned.
+            page, after = self._repo.page(user_id, limit - len(wines), after)
+            wines.extend(w for w in page if matches(w))
+            if len(wines) >= limit or after is None:
+                return wines, _encode_token(after) if after else None
+
+
+def _encode_token(wine_id: str) -> str:
+    return base64.urlsafe_b64encode(wine_id.encode()).decode()
+
+
+def _decode_token(token: str) -> str:
+    try:
+        return str(ULID.from_str(base64.urlsafe_b64decode(token.encode()).decode()))
+    except (binascii.Error, UnicodeDecodeError, ValueError) as e:
+        raise InvalidPageTokenError("next_token is not valid; pass the next_token from the previous list_wines") from e
 
 
 def _empty(field: str) -> Any:

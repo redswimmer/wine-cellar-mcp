@@ -110,7 +110,7 @@ vectors.
 | `add_photo` | Add a label photo to a wine: returns an upload link, and the photo is saved to the wine once uploaded. A wine can have several. |
 | `delete_photo` | Remove a photo from a wine, e.g. one added by mistake. |
 | `upload_search_photo` | Get an upload link and `photo_ref` for a photo to search with. Never saved. |
-| `list_wines` | Filter by verdict, varietal, and created or updated dates. |
+| `list_wines` | Filter by verdict, varietal, and created or updated dates. Newest first; pages with `limit` and `next_token`. |
 | `get_wine` / `delete_wine` | Fetch or remove one wine. |
 
 No tool takes a user ID. The bearer token identifies the user, so the user is

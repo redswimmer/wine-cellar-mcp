@@ -1,4 +1,4 @@
-"""Smoke tests for a deployed endpoint: auth, the tool list, and save/search/get/delete round trips (text and photo)."""
+"""Smoke tests for a deployed endpoint: auth, the tool list, list paging, save/search/get/delete round trips."""
 
 import asyncio
 import json
@@ -82,6 +82,21 @@ async def test_create_update_search_delete_round_trip(url, token):
         finally:
             await call(s, "delete_wine", {"wine_id": wine_id})
         assert wine_id not in await search_ids(s, NAME)
+
+
+async def test_list_pages_with_next_token(url, token):
+    async with session(url, token) as s:
+        ids = [(await call(s, "create_wine", {"name": f"{NAME} {i}"}))["wine"]["wine_id"] for i in range(3)]
+        try:
+            seen, next_token = [], None
+            for _ in ids:
+                page = await call(s, "list_wines", {"limit": 1} | ({"next_token": next_token} if next_token else {}))
+                seen += [w["wine_id"] for w in page["wines"]]
+                next_token = page["next_token"]
+            assert seen == ids[::-1]  # newest first
+        finally:
+            for wine_id in ids:
+                await call(s, "delete_wine", {"wine_id": wine_id})
 
 
 async def put_label(upload_url: str) -> None:

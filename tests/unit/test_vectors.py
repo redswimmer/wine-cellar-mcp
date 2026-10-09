@@ -73,7 +73,7 @@ def test_vector_failures_do_not_lose_the_wine(table, bedrock):
     wine = service.create_wine(USER, name="Ridge")
     assert service.get_wine(USER, wine.wine_id).name == "Ridge"
     service.delete_wine(USER, wine.wine_id)
-    assert service.list_wines(USER) == []
+    assert service.list_wines(USER)[0] == []
 
 
 def test_search_finds_wines_by_meaning_when_names_do_not_match(indexed_service, s3v, bedrock):
