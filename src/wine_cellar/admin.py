@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
 
     add_user = sub.add_parser("add-user", help="Create a user and their first token; prints the token once")
     add_user.add_argument("--username", required=True, help="Unique username, e.g. andrew")
-    add_user.add_argument("--label", required=True, help="Where the token is used, e.g. andrew-nemoclaw")
+    add_user.add_argument("--label", required=True, help="Where the token is used, e.g. andrew-laptop")
 
     sub.add_parser("list-users", help="List users (ID, username, status, created)")
 

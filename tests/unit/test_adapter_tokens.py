@@ -21,7 +21,7 @@ def andrew(table):
 
 def test_create_resolves_to_user_and_stores_only_a_hash(table, andrew):
     store = TokenStore(table)
-    token = store.create(andrew, "andrew-claw")
+    token = store.create(andrew, "andrew-agent")
     assert token.startswith(TOKEN_PREFIX)
     assert store.resolve(token) == andrew
 
@@ -43,7 +43,7 @@ def test_revoke_takes_effect_after_cache_expiry_elsewhere(table, andrew):
     clock = FakeClock()
     admin = TokenStore(table)
     lambda_view = TokenStore(table, cache_seconds=60, clock=clock)
-    token = admin.create(andrew, "andrew-claw")
+    token = admin.create(andrew, "andrew-agent")
     assert lambda_view.resolve(token) == andrew
 
     admin.revoke(hash_token(token)[:8])
@@ -70,7 +70,7 @@ def test_deactivated_user_tokens_stop_working_and_come_back(table, andrew):
     clock = FakeClock()
     users = UserStore(table)
     lambda_view = TokenStore(table, cache_seconds=60, clock=clock)
-    token = TokenStore(table).create(andrew, "andrew-claw")
+    token = TokenStore(table).create(andrew, "andrew-agent")
     assert lambda_view.resolve(token) == andrew
 
     users.set_active(andrew, False)
