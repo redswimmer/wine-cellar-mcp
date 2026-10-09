@@ -8,11 +8,6 @@ from .conftest import USER
 from .fakes import FakeS3Vectors
 
 
-def test_save_writes_a_text_vector_scoped_to_the_user(service, text_vectors):
-    wine = service.create_wine(USER, name="Ridge Monte Bello", notes="bold")
-    assert text_vectors.vectors[wine.wine_id]["metadata"] == {"user_id": USER}
-
-
 def test_updates_refresh_the_vector(service, text_vectors):
     wine = service.create_wine(USER, name="Ridge Monte Bello")
     before = text_vectors.vectors[wine.wine_id]["data"]
@@ -43,6 +38,7 @@ def test_search_returns_vector_hits_whose_names_do_not_match(service, text_vecto
     text_vectors.ranking = [ridge.wine_id]
     results = service.search_wines(USER, "that bold red I loved")
     assert [w.wine_id for w in results] == [ridge.wine_id]
+    assert service.search_wines("other", "that bold red I loved") == []
 
 
 def test_search_ranks_wines_found_both_ways_first(service, text_vectors):
@@ -56,10 +52,13 @@ def test_search_ranks_wines_found_both_ways_first(service, text_vectors):
 
 
 def test_search_ignores_vectors_of_deleted_wines(service, text_vectors):
-    wine = service.create_wine(USER, name="Ridge")
-    text_vectors.vectors["gone"] = {"key": "gone", "metadata": {"user_id": USER}}
-    text_vectors.ranking = ["gone", wine.wine_id]
-    assert [w.wine_id for w in service.search_wines(USER, "anything")] == [wine.wine_id]
+    kept = service.create_wine(USER, name="Ridge")
+    gone = service.create_wine(USER, name="Tondonia")
+    text_vectors.fail = True  # the delete's vector cleanup fails, so its vector is left behind
+    service.delete_wine(USER, gone.wine_id)
+    text_vectors.fail = False
+    text_vectors.ranking = [gone.wine_id, kept.wine_id]
+    assert [w.wine_id for w in service.search_wines(USER, "anything")] == [kept.wine_id]
 
 
 def test_search_falls_back_to_names_when_vectors_fail(service, text_vectors):

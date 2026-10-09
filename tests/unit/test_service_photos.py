@@ -47,8 +47,10 @@ def test_uploaded_photo_is_saved_to_the_wine_and_indexed(service, s3, photo_vect
     second = add_photo(service, s3, wine.wine_id)
     service.photo_uploaded(second)  # S3 can deliver an event twice
 
-    assert service.get_wine(USER, wine.wine_id).photo_keys == [first, second]
-    assert photo_vectors.vectors[first]["metadata"] == {"user_id": USER, "wine_id": wine.wine_id}
+    saved = service.get_wine(USER, wine.wine_id)
+    assert saved.photo_keys == [first, second]
+    assert saved.updated_at > wine.updated_at
+    assert sorted(photo_vectors.vectors) == sorted([first, second])
 
 
 def test_uploads_outside_wines_are_ignored(service, s3):
@@ -70,8 +72,10 @@ def test_delete_photo_removes_just_that_photo(service, s3, photo_vectors):
     wine = service.create_wine(USER, name="Ridge")
     keep = add_photo(service, s3, wine.wine_id)
     wrong = add_photo(service, s3, wine.wine_id)
+    before = service.get_wine(USER, wine.wine_id)
     updated = service.delete_photo(USER, wine.wine_id, photo_id_of(wrong))
     assert updated.photo_keys == [keep] == service.get_wine(USER, wine.wine_id).photo_keys
+    assert updated.updated_at > before.updated_at
     assert [o["Key"] for o in s3.list_objects_v2(Bucket=BUCKET)["Contents"]] == [keep]
     assert list(photo_vectors.vectors) == [keep]
     with pytest.raises(PhotoNotFoundError):

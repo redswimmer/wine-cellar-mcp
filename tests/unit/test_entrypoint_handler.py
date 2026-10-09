@@ -1,6 +1,7 @@
 """Drives the real Lambda handler with API Gateway HTTP API (v2) events."""
 
 import json
+from urllib.parse import unquote, urlparse
 
 import pytest
 
@@ -8,6 +9,7 @@ from wine_cellar.bootstrap import build_mcp_handler
 from wine_cellar.config import Settings
 from wine_cellar.lambda_adapter import make_handler
 from wine_cellar.models import photo_id_of
+from wine_cellar.photos import MAX_PHOTO_BYTES
 from wine_cellar.server import build_app
 from wine_cellar.tokens import TokenStore
 from wine_cellar.users import UserStore
@@ -136,12 +138,12 @@ def test_create_update_then_search_over_http(call):
     assert matches[0]["label"] == "Ridge Monte Bello"
 
 
-def test_wine_photos_are_listed_and_can_be_deleted(call, service, s3, tokens, table):
+def test_wine_photos_are_listed_and_can_be_deleted(call, service, s3):
     wine_id = _ok(call, "create_wine", {"name": "Ridge"})["wine"]["wine_id"]
-    user_id = TokenStore(table).resolve(tokens["andrew"])
-    assert user_id is not None
-    # What happens after the agent PUTs to add_photo's link: the S3 event records the photo.
-    key = service.add_photo(user_id, wine_id).photo_ref
+    upload = _ok(call, "add_photo", {"wine_id": wine_id})
+    assert (upload["method"], upload["max_bytes"]) == ("PUT", MAX_PHOTO_BYTES)
+    # What happens after the agent PUTs to the link: the file lands at the link's key and the S3 event records it.
+    key = unquote(urlparse(upload["upload_url"]).path.removeprefix(f"/{BUCKET}").lstrip("/"))
     s3.put_object(Bucket=BUCKET, Key=key, Body=JPEG)
     service.photo_uploaded(key)
 
@@ -152,6 +154,12 @@ def test_wine_photos_are_listed_and_can_be_deleted(call, service, s3, tokens, ta
     assert deleted["photos"] == []
 
     assert _ok(call, "delete_wine", {"wine_id": wine_id}) == {"deleted": wine_id}
+
+
+def test_upload_search_photo_returns_a_link(call):
+    upload = _ok(call, "upload_search_photo", {})
+    assert (upload["method"], upload["max_bytes"]) == ("PUT", MAX_PHOTO_BYTES)
+    assert upload["photo_ref"].startswith("search/")
 
 
 def test_tool_annotations_reach_the_client(call):
