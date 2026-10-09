@@ -117,7 +117,7 @@ def test_create_update_then_search_over_http(handler):
     assert status == 200, body
     assert not body["result"].get("isError"), body
     wine_id = body["result"]["structuredContent"]["wine"]["wine_id"]
-    update = {"wine_id": wine_id, "verdict": "love"}
+    update = {"wine_id": wine_id, "verdict": "love", "vintage": None}
     status, body = _call(handler, _rpc("tools/call", {"name": "update_wine", "arguments": update}))
     assert not body["result"].get("isError"), body
 
@@ -127,7 +127,7 @@ def test_create_update_then_search_over_http(handler):
     )
     matches = body["result"]["structuredContent"]["matches"]
     assert matches[0]["verdict"] == "love"
-    assert matches[0]["label"] == "Ridge Monte Bello 2019"
+    assert matches[0]["label"] == "Ridge Monte Bello"
 
 
 def test_unknown_wine_is_a_tool_error(handler):

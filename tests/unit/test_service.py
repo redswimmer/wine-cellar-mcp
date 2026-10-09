@@ -21,6 +21,13 @@ def test_create_then_update_only_the_given_fields(service):
     assert service.get_wine(USER, wine.wine_id) == updated
 
 
+def test_update_empties_fields_sent_as_none(service):
+    wine = service.create_wine(USER, name="Ridge", vintage=2019, varietal="Zinfandel", verdict=Verdict.LIKE, notes="ok")
+    updated = service.update_wine(USER, wine.wine_id, vintage=None, verdict=None, notes=None, varietal="Cabernet")
+    assert (updated.vintage, updated.verdict, updated.notes, updated.varietal) == (None, None, "", "Cabernet")
+    assert updated.name == "Ridge"
+
+
 def test_only_the_name_is_required(service):
     wine = service.create_wine(USER, name="Monte Bello")
     assert (wine.vintage, wine.varietal, wine.verdict, wine.notes) == (None, "", None, "")

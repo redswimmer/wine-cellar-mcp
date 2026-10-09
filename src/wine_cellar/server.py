@@ -24,7 +24,7 @@ Before creating a wine, use search_wines to check whether it is already recorded
 
 WineId = Annotated[str, Field(description="wine_id returned by another tool")]
 NAME_DESCRIPTION = "What the label says, e.g. 'Ridge Monte Bello Cabernet'"
-VINTAGE_DESCRIPTION = "Year on the label; omit for non-vintage"
+VINTAGE_DESCRIPTION = "Year on the label"
 VARIETAL_DESCRIPTION = "Grape or blend, e.g. 'Cabernet Sauvignon' or 'Grenache blend'"
 VERDICT_DESCRIPTION = "How the person feels about it"
 PhotoRef = Annotated[
@@ -32,6 +32,17 @@ PhotoRef = Annotated[
 ]
 # Mistakes the agent can fix (unknown wine, bad or missing upload, photos off) come back as tool errors.
 AGENT_ERRORS = (WineNotFoundError, PhotoNotFoundError, InvalidPhotoError, PhotosDisabledError)
+
+
+class _Unset:
+    """Default for update_wine fields the agent left out, so they can be told apart from null (empty it)."""
+
+
+UNSET = _Unset()
+
+
+def _unset() -> Any:
+    return UNSET
 
 
 def current_user(ctx: Context) -> str:
@@ -65,8 +76,9 @@ def build_server(service: WineService) -> MCPServer:
     ) -> dict[str, Any]:
         """Record a wine the person tried and what they thought of it.
 
-        Read the name, vintage and varietal off the label yourself; only the name is required. To keep the label
-        photo, call add_photo next.
+        Search first: if the wine is already recorded, use update_wine instead. Read the name, vintage and varietal
+        off the label yourself; only the name is required, so leave out anything you can't read (and the vintage for
+        non-vintage wines). To keep the label photo, call add_photo next.
         """
         wine = service.create_wine(
             current_user(ctx), name=name, vintage=vintage, varietal=varietal, verdict=verdict, notes=notes
@@ -77,28 +89,28 @@ def build_server(service: WineService) -> MCPServer:
     def update_wine(
         ctx: Context,
         wine_id: WineId,
-        name: Annotated[str | None, Field(description=NAME_DESCRIPTION)] = None,
-        vintage: Annotated[int | None, Field(description=VINTAGE_DESCRIPTION)] = None,
-        varietal: Annotated[str | None, Field(description=VARIETAL_DESCRIPTION)] = None,
-        verdict: Annotated[Verdict | None, Field(description=VERDICT_DESCRIPTION)] = None,
+        name: Annotated[str, Field(default_factory=_unset, description=NAME_DESCRIPTION)],
+        vintage: Annotated[int | None, Field(default_factory=_unset, description=VINTAGE_DESCRIPTION)],
+        varietal: Annotated[str | None, Field(default_factory=_unset, description=VARIETAL_DESCRIPTION)],
+        verdict: Annotated[Verdict | None, Field(default_factory=_unset, description=VERDICT_DESCRIPTION)],
         notes: Annotated[
             str | None,
             Field(
+                default_factory=_unset,
                 description="Replaces the notes. To add to them, send the existing notes with the new part "
-                "appended; only rewrite them if the person asks."
+                "appended; only rewrite them if the person asks.",
             ),
-        ] = None,
+        ],
     ) -> dict[str, Any]:
-        """Change a recorded wine, e.g. the person changed their mind or added a note. Omitted fields are kept."""
+        """Change a recorded wine, e.g. the person changed their mind, added a note or corrected the label.
+
+        A partial update: send only the fields that change, and every field left out keeps its value. Send null to
+        empty a field, e.g. vintage null when the person says it's non-vintage. The name can't be emptied.
+        """
+        fields = {"name": name, "vintage": vintage, "varietal": varietal, "verdict": verdict, "notes": notes}
         try:
             wine = service.update_wine(
-                current_user(ctx),
-                wine_id,
-                name=name,
-                vintage=vintage,
-                varietal=varietal,
-                verdict=verdict,
-                notes=notes,
+                current_user(ctx), wine_id, **{k: v for k, v in fields.items() if v is not UNSET}
             )
         except WineNotFoundError as e:
             raise ToolError(str(e)) from e
@@ -162,7 +174,7 @@ def build_server(service: WineService) -> MCPServer:
             ),
         ] = "",
         photo_ref: PhotoRef = None,
-        limit: Annotated[int, Field(ge=1, le=20)] = 5,
+        limit: Annotated[int, Field(ge=1, le=20, description="Most matches to return")] = 5,
     ) -> dict[str, Any]:
         """Find wines the person has recorded, best match first, with their verdicts and notes.
 
@@ -182,17 +194,21 @@ def build_server(service: WineService) -> MCPServer:
     @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
     def list_wines(
         ctx: Context,
-        verdict: Verdict | None = None,
+        verdict: Annotated[Verdict | None, Field(description="Only wines with this verdict")] = None,
         varietal: Annotated[str | None, Field(description="Varietal contains this text")] = None,
         created_after: Annotated[datetime | None, Field(description="First recorded at or after (UTC)")] = None,
         created_before: Annotated[datetime | None, Field(description="First recorded at or before (UTC)")] = None,
         updated_after: Annotated[datetime | None, Field(description="Last changed at or after (UTC)")] = None,
         updated_before: Annotated[datetime | None, Field(description="Last changed at or before (UTC)")] = None,
-        limit: Annotated[int, Field(ge=1, le=100)] = 25,
+        limit: Annotated[
+            int, Field(ge=1, le=100, description="Most wines to return; total says how many matched")
+        ] = 25,
     ) -> dict[str, Any]:
         """List recorded wines, most recently updated first, optionally filtered.
 
-        For "the red I tried for the first time yesterday", filter on created_after/created_before.
+        Dates are when a wine was first recorded (created) and last changed (updated). For "the wine I tried for the
+        first time yesterday", filter on created_after/created_before. To find wines by description, use
+        search_wines.
         """
         wines = service.list_wines(
             current_user(ctx),

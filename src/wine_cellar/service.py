@@ -85,9 +85,9 @@ class WineService:
         return wine
 
     def update_wine(self, user_id: str, wine_id: str, **changes: Any) -> Wine:
-        """Change the given fields; fields left out (None) keep their value."""
+        """Partial update: only the given fields change, and a field given as None is emptied."""
         wine = self.get_wine(user_id, wine_id)
-        changes = {k: v.strip() if type(v) is str else v for k, v in changes.items() if v is not None}
+        changes = {k: _empty(k) if v is None else v.strip() if type(v) is str else v for k, v in changes.items()}
         updated = Wine.model_validate({**wine.model_dump(), **changes, "updated_at": datetime.now(UTC)})
         self._save(updated)
         return updated
@@ -220,6 +220,10 @@ class WineService:
             if before:
                 wines = [w for w in wines if getattr(w, field) <= _utc(before)]
         return sorted(wines, key=lambda w: w.updated_at, reverse=True)
+
+
+def _empty(field: str) -> Any:
+    return Wine.model_fields[field].get_default()
 
 
 def _utc(moment: datetime) -> datetime:
