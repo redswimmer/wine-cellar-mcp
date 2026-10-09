@@ -16,6 +16,7 @@ from .auth import USER_ID_STATE_KEY, BearerAuthMiddleware
 from .models import InvalidPhotoError, Upload, Verdict, Wine, photo_added_at, photo_id_of
 from .service import (
     InvalidPageTokenError,
+    InvalidWineError,
     PhotoNotFoundError,
     PhotosDisabledError,
     WineNotFoundError,
@@ -35,8 +36,15 @@ VERDICT_DESCRIPTION = "How the person feels about it"
 PhotoRef = Annotated[
     str | None, Field(description="photo_ref from upload_search_photo, after uploading the photo to its upload_url")
 ]
-# Mistakes the agent can fix (unknown wine, bad or missing upload, photos off) come back as tool errors.
-AGENT_ERRORS = (WineNotFoundError, PhotoNotFoundError, InvalidPhotoError, PhotosDisabledError, InvalidPageTokenError)
+# Mistakes the agent can fix (unknown wine, no name, bad or missing upload, photos off) come back as tool errors.
+AGENT_ERRORS = (
+    WineNotFoundError,
+    InvalidWineError,
+    PhotoNotFoundError,
+    InvalidPhotoError,
+    PhotosDisabledError,
+    InvalidPageTokenError,
+)
 
 
 class _Unset:
@@ -85,9 +93,12 @@ def build_server(service: WineService) -> MCPServer:
         off the label yourself; only the name is required, so leave out anything you can't read (and the vintage for
         non-vintage wines). To keep the label photo, call add_photo next.
         """
-        wine = service.create_wine(
-            current_user(ctx), name=name, vintage=vintage, varietal=varietal, verdict=verdict, notes=notes
-        )
+        try:
+            wine = service.create_wine(
+                current_user(ctx), name=name, vintage=vintage, varietal=varietal, verdict=verdict, notes=notes
+            )
+        except AGENT_ERRORS as e:
+            raise ToolError(str(e)) from e
         return {"wine": _summary(wine)}
 
     @mcp.tool(annotations=ToolAnnotations(idempotent_hint=True))
@@ -117,7 +128,7 @@ def build_server(service: WineService) -> MCPServer:
             wine = service.update_wine(
                 current_user(ctx), wine_id, **{k: v for k, v in fields.items() if v is not UNSET}
             )
-        except WineNotFoundError as e:
+        except AGENT_ERRORS as e:
             raise ToolError(str(e)) from e
         return {"wine": _summary(wine)}
 

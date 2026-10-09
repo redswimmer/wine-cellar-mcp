@@ -36,6 +36,10 @@ class InvalidPageTokenError(ValueError):
     pass
 
 
+class InvalidWineError(ValueError):
+    pass
+
+
 class PhotosDisabledError(RuntimeError):
     pass
 
@@ -82,7 +86,7 @@ class WineService:
         wine = Wine(
             wine_id=str(ULID()),
             user_id=user_id,
-            name=name.strip(),
+            name=_required_name(name),
             vintage=vintage,
             varietal=varietal.strip(),
             verdict=verdict,
@@ -94,6 +98,8 @@ class WineService:
     def update_wine(self, user_id: str, wine_id: str, **changes: Any) -> Wine:
         """Partial update: only the given fields change, and a field given as None is emptied."""
         wine = self.get_wine(user_id, wine_id)
+        if "name" in changes:
+            changes["name"] = _required_name(changes["name"])
         changes = {k: _empty(k) if v is None else v.strip() if type(v) is str else v for k, v in changes.items()}
         updated = Wine.model_validate({**wine.model_dump(), **changes, "updated_at": datetime.now(UTC)})
         self._save(updated)
@@ -270,6 +276,12 @@ def _decode_token(token: str) -> str:
         return str(ULID.from_str(base64.urlsafe_b64decode(token.encode()).decode()))
     except (binascii.Error, UnicodeDecodeError, ValueError) as e:
         raise InvalidPageTokenError("next_token is not valid; pass the next_token from the previous list_wines") from e
+
+
+def _required_name(name: str | None) -> str:
+    if not name or not name.strip():
+        raise InvalidWineError("A wine needs a name; send what the label says")
+    return name.strip()
 
 
 def _empty(field: str) -> Any:

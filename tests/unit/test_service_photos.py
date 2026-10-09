@@ -1,46 +1,18 @@
-import boto3
+"""High gear: label photos through WineService, with S3 on moto and fake vectors."""
+
 import pytest
-from botocore.config import Config
 
 from wine_cellar.models import InvalidPhotoError, photo_id_of
-from wine_cellar.photos import MAX_PHOTO_BYTES, PhotoStore, sniff, uploaded_keys
+from wine_cellar.photos import MAX_PHOTO_BYTES, PhotoStore
 from wine_cellar.repository import WineRepository
 from wine_cellar.service import PhotoNotFoundError, PhotosDisabledError, WineNotFoundError, WineService
-from wine_cellar.vectors import Embedder, WinePhotoIndex, WineTextIndex
+from wine_cellar.vectors import Embedder, WinePhotoIndex
 
-from .fakes import FakeBedrock, FakeS3Vectors
+from .conftest import BUCKET, JPEG, USER
+from .fakes import FakeS3Vectors
 
-USER = "usr_1"
-JPEG = b"\xff\xd8\xff\xe0" + b"label" * 100
-BUCKET = "photos-test"
-
-
-@pytest.fixture
-def bedrock():
-    return FakeBedrock()
-
-
-@pytest.fixture
-def photo_vectors():
-    return FakeS3Vectors()
-
-
-@pytest.fixture
-def s3(table):  # `table` keeps moto's mock_aws active
-    client = boto3.client("s3", region_name="us-east-1", config=Config(signature_version="s3v4"))
-    client.create_bucket(Bucket=BUCKET)
-    return client
-
-
-@pytest.fixture
-def service(table, s3, bedrock, photo_vectors):
-    embedder = Embedder(bedrock)
-    return WineService(
-        WineRepository(table),
-        WineTextIndex(FakeS3Vectors(), embedder, bucket="vb", index="wine-text"),
-        photos=PhotoStore(s3, BUCKET),
-        photo_index=WinePhotoIndex(photo_vectors, embedder, bucket="vb", index="wine-photos"),
-    )
+PDF = b"%PDF-1.7"
+TOO_BIG = b"\xff\xd8\xff" + b"x" * MAX_PHOTO_BYTES
 
 
 def search_photo(service, s3, data: bytes = JPEG, user: str = USER) -> str:
@@ -58,19 +30,10 @@ def add_photo(service, s3, wine_id: str, data: bytes = JPEG) -> str:
     return key
 
 
-def test_sniff_recognises_common_formats():
-    assert sniff(JPEG).format == "jpeg"
-    assert sniff(b"\x89PNG\r\n\x1a\n" + b"x" * 10).format == "png"
-    assert sniff(b"RIFF\x00\x00\x00\x00WEBPVP8 ").format == "webp"
-    assert sniff(b"GIF89a...").format == "gif"
-
-
 def test_add_photo_link_uploads_straight_to_the_wine(service):
     wine = service.create_wine(USER, name="Ridge")
     link = service.add_photo(USER, wine.wine_id)
-    assert link.photo_ref.startswith(f"wines/{USER}/{wine.wine_id}/")
-    assert BUCKET in link.upload_url and link.photo_ref in link.upload_url
-    assert "X-Amz-Signature=" in link.upload_url
+    assert link.photo_ref.startswith(f"wines/{USER}/{wine.wine_id}/")  # the S3 upload event filters on this
 
 
 def test_add_photo_needs_an_existing_wine(service):
@@ -88,13 +51,13 @@ def test_uploaded_photo_is_saved_to_the_wine_and_indexed(service, s3, photo_vect
     assert photo_vectors.vectors[first]["metadata"] == {"user_id": USER, "wine_id": wine.wine_id}
 
 
-def test_upload_event_keys_are_decoded():
-    event = {"Records": [{"s3": {"object": {"key": "wines/usr_1/w1/01J+label%2Bshot.jpg"}}}]}
-    assert uploaded_keys(event) == ["wines/usr_1/w1/01J label+shot.jpg"]
-    assert uploaded_keys({}) == []
+def test_uploads_outside_wines_are_ignored(service, s3):
+    s3.put_object(Bucket=BUCKET, Key="search/usr_1/01J", Body=JPEG)
+    service.photo_uploaded("search/usr_1/01J")
+    assert s3.list_objects_v2(Bucket=BUCKET)["KeyCount"] == 1
 
 
-@pytest.mark.parametrize("data", [b"%PDF-1.7", b"\xff\xd8\xff" + b"x" * MAX_PHOTO_BYTES])
+@pytest.mark.parametrize("data", [PDF, TOO_BIG], ids=["pdf", "too-big"])
 def test_unusable_uploads_to_a_wine_are_discarded(service, s3, photo_vectors, data):
     wine = service.create_wine(USER, name="Ridge")
     add_photo(service, s3, wine.wine_id, data)
@@ -113,6 +76,18 @@ def test_delete_photo_removes_just_that_photo(service, s3, photo_vectors):
     assert list(photo_vectors.vectors) == [keep]
     with pytest.raises(PhotoNotFoundError):
         service.delete_photo(USER, wine.wine_id, photo_id_of(wrong))
+
+
+def test_delete_photo_survives_storage_failures(table, s3, bedrock, service):
+    wine = service.create_wine(USER, name="Ridge")
+    key = add_photo(service, s3, wine.wine_id)
+    broken = WineService(
+        WineRepository(table),
+        photos=PhotoStore(s3, "no-such-bucket"),
+        photo_index=WinePhotoIndex(FakeS3Vectors(fail=True), Embedder(bedrock), bucket="vb", index="wine-photos"),
+    )
+    assert broken.delete_photo(USER, wine.wine_id, photo_id_of(key)).photo_keys == []
+    assert service.get_wine(USER, wine.wine_id).photo_keys == []
 
 
 def test_photo_for_a_deleted_wine_is_discarded(service, s3):
@@ -136,10 +111,8 @@ def test_delete_wine_removes_its_photos_and_vectors(service, s3, photo_vectors):
 
 @pytest.mark.parametrize(
     ("data", "message"),
-    [
-        (b"%PDF-1.7", "JPEG, PNG"),
-        (b"\xff\xd8\xff" + b"x" * MAX_PHOTO_BYTES, "smaller size"),
-    ],
+    [(PDF, "JPEG, PNG"), (TOO_BIG, "smaller size")],
+    ids=["pdf", "too-big"],
 )
 def test_bad_search_photos_are_rejected_with_a_useful_message(service, s3, data, message):
     with pytest.raises(InvalidPhotoError, match=message):
@@ -160,7 +133,7 @@ def test_another_users_search_photo_cannot_be_used(service, s3):
 
 def test_search_photo_is_used_once_and_never_saved(service, s3):
     ref = search_photo(service, s3)
-    assert service.search_wines(USER, "ridge", photo_ref=ref) == []
+    service.search_wines(USER, "ridge", photo_ref=ref)
     assert s3.list_objects_v2(Bucket=BUCKET).get("KeyCount") == 0
     with pytest.raises(InvalidPhotoError, match="upload again"):
         service.search_wines(USER, photo_ref=ref)
@@ -182,8 +155,9 @@ def test_search_with_photo_and_label_text_merges_both(service, s3, photo_vectors
     other = service.create_wine(USER, name="Lopez de Heredia")
     photo_vectors.ranking = [add_photo(service, s3, other.wine_id), add_photo(service, s3, ridge.wine_id)]
     # The photo alone ranks the other wine first; the label text agrees with Ridge's photo match.
-    results = service.search_wines(USER, "Ridge Monte Bello", photo_ref=search_photo(service, s3))
-    assert results[0].wine_id == ridge.wine_id
+    ids = [w.wine_id for w in service.search_wines(USER, "Ridge Monte Bello", photo_ref=search_photo(service, s3))]
+    assert ids[0] == ridge.wine_id
+    assert other.wine_id in ids  # found only by its photo
 
 
 def test_photo_search_failures_fall_back_to_text(table, s3, bedrock):

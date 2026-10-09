@@ -261,8 +261,8 @@ Any MCP client that speaks Streamable HTTP and can send an `Authorization`
 header works. To check a deployment end to end without a client, run
 `uv run pytest tests/e2e`. These end-to-end tests call the deployed endpoint
 (`$WINE_MCP_URL`, default dev) with the token in `$WINE_MCP_TOKEN` or
-`~/.config/wine-cellar/dev-token`, skip when there is no token, and delete
-their test wine. Plain `uv run pytest` runs only the unit tests.
+`~/.config/wine-cellar/dev-token`, skip locally when there is no token, and
+delete their test wines. Plain `uv run pytest` runs only the unit tests.
 
 ### Claude Code
 

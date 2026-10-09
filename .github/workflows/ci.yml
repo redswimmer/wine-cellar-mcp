@@ -23,7 +23,7 @@ jobs:
       - name: Ruff format
         run: uv run ruff format --check .
       - name: Type check
-        run: uv run ty check src infra
+        run: uv run ty check
       - name: Import rules
         run: uv run lint-imports
       - name: Unit tests

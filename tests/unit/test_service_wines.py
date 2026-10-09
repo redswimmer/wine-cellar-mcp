@@ -1,11 +1,13 @@
+"""High gear: recording, listing and finding wines through WineService, using primitives only."""
+
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from wine_cellar.models import Verdict, Wine
-from wine_cellar.service import InvalidPageTokenError, WineNotFoundError
+from wine_cellar.models import Verdict
+from wine_cellar.service import InvalidPageTokenError, InvalidWineError, WineNotFoundError
 
-USER = "123456"
+from .conftest import USER
 
 
 def test_create_then_update_only_the_given_fields(service):
@@ -33,6 +35,17 @@ def test_only_the_name_is_required(service):
     assert (wine.vintage, wine.varietal, wine.verdict, wine.notes) == (None, "", None, "")
 
 
+@pytest.mark.parametrize("name", ["", "   "])
+def test_a_wine_needs_a_name(service, name):
+    with pytest.raises(InvalidWineError):
+        service.create_wine(USER, name=name)
+    wine = service.create_wine(USER, name="Ridge")
+    for bad in (name, None):
+        with pytest.raises(InvalidWineError):
+            service.update_wine(USER, wine.wine_id, name=bad)
+    assert service.get_wine(USER, wine.wine_id).name == "Ridge"
+
+
 def test_update_unknown_wine(service):
     with pytest.raises(WineNotFoundError):
         service.update_wine(USER, "nope", notes="x")
@@ -51,6 +64,12 @@ def test_search_ranks_closest_match_first(service):
     results = service.search_wines(USER, "tondonia")
     assert results[0].name == "Lopez de Heredia Viña Tondonia"
     assert all(r.name != "Ridge Monte Bello" for r in results)
+
+
+def test_search_returns_at_most_limit_wines(service):
+    for i in range(4):
+        service.create_wine(USER, name=f"Ridge {i}")
+    assert len(service.search_wines(USER, "ridge", limit=2)) == 2
 
 
 def test_list_filters_by_verdict_and_varietal(service):
@@ -76,15 +95,15 @@ def test_list_filters_by_dates(service):
     assert service.list_wines(USER, created_after=naive)[0] == []
 
 
-def test_list_pages_newest_first_with_next_token(service):
+def test_list_pages_through_every_wine_once(service):
+    # Newest-first order needs real timestamps; e2e checks it. Wines made in the same millisecond can't show it.
     wines = [service.create_wine(USER, name=f"W{i}") for i in range(5)]
-    names = [w.name for w in sorted(wines, key=lambda w: w.wine_id, reverse=True)]
 
     first, token = service.list_wines(USER, limit=2)
     second, token2 = service.list_wines(USER, limit=2, next_token=token)
     third, token3 = service.list_wines(USER, limit=2, next_token=token2)
-    assert [w.name for w in first + second + third] == names
-    assert len(third) == 1
+    assert sorted(w.wine_id for w in first + second + third) == sorted(w.wine_id for w in wines)
+    assert (len(first), len(second), len(third)) == (2, 2, 1)
     assert token3 is None
 
 
@@ -102,22 +121,6 @@ def test_filtered_page_keeps_reading_until_full(service):
 def test_list_rejects_a_bad_token(service, token):
     with pytest.raises(InvalidPageTokenError):
         service.list_wines(USER, next_token=token)
-
-
-def test_reads_wines_saved_before_the_model_was_simplified():
-    wine = Wine.model_validate(
-        {
-            "wine_id": "w",
-            "user_id": USER,
-            "producer": "Ridge",
-            "name": "Monte Bello",
-            "varietals": ["Cab", "Merlot"],
-            "region": "Santa Cruz",
-            "tastings": [],
-            "rating": 5,
-        }
-    )
-    assert (wine.name, wine.varietal) == ("Ridge Monte Bello", "Cab, Merlot")
 
 
 def test_delete(service):

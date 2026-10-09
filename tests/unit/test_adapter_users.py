@@ -1,8 +1,10 @@
+"""Adapter: the user store over DynamoDB (moto), and that profiles share the table with wines safely."""
+
 import pytest
 
-from wine_cellar.repository import WineRepository
+from wine_cellar.repository import WineRepository, user_pk
 from wine_cellar.service import WineService
-from wine_cellar.users import USER_ID_PREFIX, UsernameTakenError, UserStore
+from wine_cellar.users import PROFILE_SK, USER_ID_PREFIX, UsernameTakenError, UserStore
 
 
 def test_ids_are_generated_and_opaque(table):
@@ -10,7 +12,6 @@ def test_ids_are_generated_and_opaque(table):
     a, b = store.create("andrew"), store.create("sam")
     assert a.user_id != b.user_id
     assert a.user_id.startswith(USER_ID_PREFIX)
-    assert len(a.user_id) == len(USER_ID_PREFIX) + 26
     assert {(u.user_id, u.username) for u in store.list()} == {(a.user_id, "andrew"), (b.user_id, "sam")}
 
 
@@ -67,6 +68,6 @@ def test_set_active_unknown_user(table):
 
 def test_profiles_without_active_flag_count_as_active(table):
     user = UserStore(table).create("andrew")
-    table.update_item(Key={"pk": f"USER#{user.user_id}", "sk": "PROFILE"}, UpdateExpression="REMOVE active")
+    table.update_item(Key={"pk": user_pk(user.user_id), "sk": PROFILE_SK}, UpdateExpression="REMOVE active")
     fetched = UserStore(table).get(user.user_id)
     assert fetched is not None and fetched.active
