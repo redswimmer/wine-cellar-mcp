@@ -1,8 +1,11 @@
 """Low gear: pure domain functions with fiddly edge cases. Most behaviour is tested through the service instead."""
 
-import pytest
+from datetime import UTC, datetime
 
-from wine_cellar.models import Verdict, Wine
+import pytest
+from ulid import ULID
+
+from wine_cellar.models import PhotoInfo, Verdict, Wine
 from wine_cellar.photos import sniff, uploaded_keys, wine_photo_owner
 from wine_cellar.search import fuse
 from wine_cellar.vectors import wine_text
@@ -39,6 +42,13 @@ def test_wine_text_includes_label_details_and_what_the_person_said():
     text = wine_text(wine)
     for part in ["Ridge Monte Bello 2019", "Cabernet", "love", "Huge"]:
         assert part in text
+
+
+def test_photos_expose_id_and_added_time_not_storage_key():
+    added = datetime(2026, 10, 9, 12, 0, tzinfo=UTC)
+    photo_id = str(ULID.from_datetime(added))
+    wine = Wine(wine_id="w1", user_id=USER, name="Ridge", photo_keys=[f"wines/{USER}/w1/{photo_id}"])
+    assert wine.photos == [PhotoInfo(photo_id, added)]
 
 
 def test_fuse_rewards_agreement():

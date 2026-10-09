@@ -47,6 +47,11 @@ class Wine(BaseModel):
     def label(self) -> str:
         return " ".join(p for p in [self.name, str(self.vintage) if self.vintage else ""] if p)
 
+    @property
+    def photos(self) -> list["PhotoInfo"]:
+        """The wine's photos as the agent sees them: an id and when it was added, not the storage key."""
+        return [PhotoInfo(photo_id_of(k), photo_added_at(k)) for k in self.photo_keys]
+
 
 class InvalidPhotoError(ValueError):
     """The photo can't be used; the message tells the agent what to do instead."""
@@ -60,6 +65,12 @@ class Upload:
     upload_url: str
     max_bytes: int
     expires_in_seconds: int
+
+
+@dataclass(frozen=True)
+class PhotoInfo:
+    photo_id: str
+    added_at: datetime
 
 
 def photo_id_of(key: str) -> str:
