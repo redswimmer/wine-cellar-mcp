@@ -18,10 +18,12 @@ from aws_cdk import aws_logs as logs
 from aws_cdk import aws_route53 as route53
 from aws_cdk import aws_route53_targets as targets
 from aws_cdk import aws_s3 as s3
+from aws_cdk import aws_s3_notifications as s3n
 from aws_cdk import aws_s3vectors as s3vectors
 from aws_cdk.aws_apigatewayv2_integrations import HttpLambdaIntegration
 from constructs import Construct
 
+from wine_cellar.photos import SEARCH_PREFIX, SEARCH_RETENTION_DAYS, WINE_PREFIX
 from wine_cellar.vectors import EMBEDDING_DIMENSION, EMBEDDING_MODEL_ID
 
 TEXT_INDEX_NAME = "wine-text"
@@ -94,49 +96,66 @@ class WineCellarServiceStack(Stack):
             enforce_ssl=True,
             removal_policy=removal,
             auto_delete_objects=not config.is_prod,
+            # Search photos are deleted after the search; this catches ones uploaded but never searched with.
+            lifecycle_rules=[s3.LifecycleRule(prefix=SEARCH_PREFIX, expiration=Duration.days(SEARCH_RETENTION_DAYS))],
         )
 
-        fn = lambda_.Function(
-            self,
-            "McpFunction",
-            runtime=lambda_.Runtime.PYTHON_3_13,
-            architecture=lambda_.Architecture.ARM_64,
-            handler="wine_cellar.handler.handler",
-            code=lambda_.Code.from_asset(config.lambda_asset_path),
-            memory_size=512,
-            timeout=Duration.seconds(25),
-            environment={
-                "TABLE_NAME": table.table_name,
-                "ALLOWED_HOSTS": config.domain.domain_name if config.domain else "",
-                "VECTOR_BUCKET": vector_bucket.vector_bucket_name or "",
-                "TEXT_INDEX": TEXT_INDEX_NAME,
-                "PHOTO_INDEX": PHOTO_INDEX_NAME,
-                "PHOTO_BUCKET": photo_bucket.bucket_name,
-            },
-            log_group=logs.LogGroup(
-                self, "McpLogs", retention=logs.RetentionDays.ONE_MONTH, removal_policy=RemovalPolicy.DESTROY
-            ),
-        )
-        table.grant_read_write_data(fn)
-        fn.add_to_role_policy(
-            iam.PolicyStatement(
-                # QueryVectors needs GetVectors too when it filters on metadata.
-                actions=[
-                    "s3vectors:PutVectors",
-                    "s3vectors:DeleteVectors",
-                    "s3vectors:QueryVectors",
-                    "s3vectors:GetVectors",
-                ],
-                resources=[index.attr_index_arn for index in indexes.values()],
+        environment = {
+            "TABLE_NAME": table.table_name,
+            "ALLOWED_HOSTS": config.domain.domain_name if config.domain else "",
+            "VECTOR_BUCKET": vector_bucket.vector_bucket_name or "",
+            "TEXT_INDEX": TEXT_INDEX_NAME,
+            "PHOTO_INDEX": PHOTO_INDEX_NAME,
+            "PHOTO_BUCKET": photo_bucket.bucket_name,
+        }
+        code = lambda_.Code.from_asset(config.lambda_asset_path)
+
+        def function(construct_id: str, handler: str, timeout: Duration) -> lambda_.Function:
+            fn = lambda_.Function(
+                self,
+                construct_id,
+                runtime=lambda_.Runtime.PYTHON_3_13,
+                architecture=lambda_.Architecture.ARM_64,
+                handler=handler,
+                code=code,
+                memory_size=512,
+                timeout=timeout,
+                environment=environment,
+                log_group=logs.LogGroup(
+                    self,
+                    f"{construct_id.removesuffix('Function')}Logs",
+                    retention=logs.RetentionDays.ONE_MONTH,
+                    removal_policy=RemovalPolicy.DESTROY,
+                ),
             )
-        )
-        photo_bucket.grant_put(fn)
-        photo_bucket.grant_delete(fn)
-        fn.add_to_role_policy(
-            iam.PolicyStatement(
-                actions=["bedrock:InvokeModel"],
-                resources=[f"arn:aws:bedrock:{self.region}::foundation-model/{EMBEDDING_MODEL_ID}"],
+            table.grant_read_write_data(fn)
+            fn.add_to_role_policy(
+                iam.PolicyStatement(
+                    # QueryVectors needs GetVectors too when it filters on metadata.
+                    actions=[
+                        "s3vectors:PutVectors",
+                        "s3vectors:DeleteVectors",
+                        "s3vectors:QueryVectors",
+                        "s3vectors:GetVectors",
+                    ],
+                    resources=[index.attr_index_arn for index in indexes.values()],
+                )
             )
+            # Put also lets the Lambda sign the upload URLs it hands to agents; read checks the uploads.
+            photo_bucket.grant_read_write(fn)
+            fn.add_to_role_policy(
+                iam.PolicyStatement(
+                    actions=["bedrock:InvokeModel"],
+                    resources=[f"arn:aws:bedrock:{self.region}::foundation-model/{EMBEDDING_MODEL_ID}"],
+                )
+            )
+            return fn
+
+        fn = function("McpFunction", "wine_cellar.handler.handler", Duration.seconds(25))
+        # A photo uploaded to a wine's link is checked, recorded on the wine and indexed by this function.
+        photo_fn = function("PhotoFunction", "wine_cellar.handler.photo_handler", Duration.seconds(60))
+        photo_bucket.add_event_notification(
+            s3.EventType.OBJECT_CREATED, s3n.LambdaDestination(photo_fn), s3.NotificationKeyFilter(prefix=WINE_PREFIX)
         )
 
         domain_name = None

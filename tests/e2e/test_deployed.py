@@ -1,7 +1,9 @@
-"""Smoke tests for a deployed endpoint: auth, the tool list, and a save/search/get/delete round trip."""
+"""Smoke tests for a deployed endpoint: auth, the tool list, and save/search/get/delete round trips (text and photo)."""
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import pytest
 from mcp import ClientSession
@@ -11,13 +13,15 @@ pytestmark = pytest.mark.anyio
 
 EXPECTED_TOOLS = {
     "save_wine",
-    "add_wine_photo",
+    "add_photo",
+    "upload_search_photo",
     "add_tasting",
     "search_wines",
     "list_wines",
     "get_wine",
     "delete_wine",
 }
+LABEL = Path(__file__).with_name("label.jpg")
 PRODUCER = "Smoke Test Cellars"
 TEST_WINE = {"producer": PRODUCER, "name": "Smoke Test Red", "vintage": 2020, "verdict": "like"}
 INITIALIZE = {
@@ -76,3 +80,37 @@ async def test_save_search_get_delete_round_trip(url, token):
         finally:
             await call(s, "delete_wine", {"wine_id": wine_id})
         assert wine_id not in await search_ids(s, PRODUCER)
+
+
+async def put_label(upload_url: str) -> None:
+    async with create_mcp_http_client() as http:
+        resp = await http.put(upload_url, content=LABEL.read_bytes())
+    assert resp.status_code == 200, resp.text
+
+
+async def test_add_photo_then_search_by_photo(url, token):
+    async with session(url, token) as s:
+        wine_id = (await call(s, "save_wine", TEST_WINE))["wine"]["wine_id"]
+        try:
+            await put_label((await call(s, "add_photo", {"wine_id": wine_id}))["upload_url"])
+            for _ in range(20):  # the upload event records the photo a few seconds later
+                if (await call(s, "get_wine", {"wine_id": wine_id}))["wine"]["photo_count"]:
+                    break
+                await asyncio.sleep(1)
+            else:
+                pytest.fail("photo was never saved to the wine")
+
+            search = await call(s, "upload_search_photo", {})
+            await put_label(search["upload_url"])
+            matches = (await call(s, "search_wines", {"photo_ref": search["photo_ref"]}))["matches"]
+            assert matches and matches[0]["wine_id"] == wine_id
+        finally:
+            await call(s, "delete_wine", {"wine_id": wine_id})
+
+
+async def test_unuploaded_photo_ref_is_a_clear_error(url, token):
+    async with session(url, token) as s:
+        ref = (await call(s, "upload_search_photo", {}))["photo_ref"]
+        result = await s.call_tool("search_wines", {"photo_ref": ref})
+    assert result.is_error
+    assert "upload again" in "".join(getattr(c, "text", "") for c in result.content)
