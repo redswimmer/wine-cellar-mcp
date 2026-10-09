@@ -16,7 +16,7 @@ from wine_cellar.users import UserStore
 
 from .conftest import BUCKET, JPEG
 
-HOST = "mcp.wine-dev.redswimmer.com"
+HOST = "mcp.wine-dev.example.com"
 
 
 @pytest.fixture

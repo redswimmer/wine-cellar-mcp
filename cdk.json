@@ -4,6 +4,13 @@
     "include": ["infra/**", "src/**"]
   },
   "context": {
-    "zoneName": "redswimmer.com"
+    "region": "us-east-1",
+    "zoneName": "redswimmer.com",
+    "hostedZoneId": "Z03175373LLX3ZRNR8A6Y",
+    "stages": {
+      "dev": { "domainName": "mcp.wine-dev.redswimmer.com" },
+      "prod": { "domainName": "mcp.wine.redswimmer.com" }
+    },
+    "githubSubPrefix": "repo:redswimmer@38088099/wine-cellar-mcp@1410527756"
   }
 }

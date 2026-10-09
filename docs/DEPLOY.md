@@ -5,7 +5,8 @@ Dev deploys automatically on every merge to `main`. Prod deploys only when the
 
 ## One-time setup
 
-You need the AWS CLI signed in to the account that holds `redswimmer.com`,
+You need the AWS CLI signed in to the account that holds your domain's
+hosted zone,
 plus `uv` and Node 22.
 
 With IAM Identity Center (SSO), select your profile and log in first; CDK and
@@ -21,20 +22,31 @@ aws sts get-caller-identity          # should print the account
 "Unable to locate credentials" means no profile is selected; an expired-token
 error means it's time to run `aws sso login` again.
 
-1. **Find the hosted zone ID** for `redswimmer.com`:
+1. **Set the deployment settings in `cdk.json`.** Everything about where the
+   service is deployed lives in its `context` block, not in code:
+
+   | Key | What it is |
+   |-----|------------|
+   | `region` | AWS region for every stack. It must offer S3 Vectors and Nova multimodal embeddings. |
+   | `stages.<stage>.domainName` | Custom domain per stage, e.g. `mcp.dev.example.com`. Remove it to use the default API Gateway URL. |
+   | `zoneName`, `hostedZoneId` | The Route 53 zone that holds those names. |
+   | `githubSubPrefix` | The GitHub OIDC subject prefix the deploy role trusts (step 3). |
+
+   Find the hosted zone ID with:
 
    ```
-   aws route53 list-hosted-zones-by-name --dns-name redswimmer.com \
+   aws route53 list-hosted-zones-by-name --dns-name <zone-name> \
      --query 'HostedZones[0].Id' --output text
    ```
 
-   Use the part after `/hostedzone/`.
+   Use the part after `/hostedzone/`. Changing any of these later is a
+   `cdk.json` edit and a deploy, not a code change.
 
-2. **Bootstrap CDK** in us-east-1 (skip if you've done it before in this
+2. **Bootstrap CDK** in your region (skip if you've done it before in this
    account and region):
 
    ```
-   npx aws-cdk@2.1144.0 bootstrap aws://<account-id>/us-east-1
+   npx aws-cdk@2.1144.0 bootstrap aws://<account-id>/<region>
    ```
 
 3. **Create the GitHub deploy role.** If the account already has a GitHub
@@ -50,18 +62,18 @@ error means it's time to run `aws sso login` again.
 
    Note the `DeployRoleArn` output.
 
-   The role trusts GitHub's immutable OIDC subject for this repo
-   (`repo:redswimmer@38088099/wine-cellar-mcp@1410527756:environment:<env>`),
-   which pins the owner and repo by ID. If the repo's subject format ever
-   changes, check it with
-   `gh api repos/redswimmer/wine-cellar-mcp/actions/oidc/customization/sub`
-   and pass `-c githubSubPrefix=<sub_claim_prefix>`.
+   The role trusts `<githubSubPrefix>:environment:<env>` for each stage. Get
+   the prefix for your repo with
+   `gh api repos/<owner>/<repo>/actions/oidc/customization/sub`. With GitHub's
+   immutable subjects it looks like `repo:<owner>@<owner-id>/<repo>@<repo-id>`,
+   pinning owner and repo by ID; otherwise it's `repo:<owner>/<repo>`. Set it
+   in `cdk.json` before deploying this stack.
 
 4. **Configure GitHub** (repo Settings):
    - Environments: create `dev` and `prod`. Give `prod` a required reviewer
      (you) so prod deploys wait for approval.
-   - Variables (Actions, repository level): `AWS_DEPLOY_ROLE_ARN` = the role
-     ARN from step 3, and `HOSTED_ZONE_ID` = the ID from step 1.
+   - Variable (Actions, repository level): `AWS_DEPLOY_ROLE_ARN` = the role
+     ARN from step 3. That's the only variable; the rest is in `cdk.json`.
 
    - Secret (Environments → `dev`): `WINE_MCP_TOKEN` = a dev token for a
      dedicated test user, used by the e2e tests after each dev deploy:
@@ -73,7 +85,9 @@ removed secret can't let the tests pass without running.
 
 ## After a deploy
 
-The workflow summary shows the stack outputs, including `McpUrl`.
+The workflow summary shows the stack outputs, including `McpUrl`. The e2e
+job gets its URL from that output; locally, set `WINE_MCP_URL` to run
+`uv run pytest tests/e2e`.
 
 Add each user once with a unique username. `add-user` generates their ID (`usr_...`, shown on
 stderr) and prints their first token. The token is printed once and only its
