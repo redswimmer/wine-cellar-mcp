@@ -4,9 +4,9 @@ import boto3
 import pytest
 from botocore.config import Config
 
-from wine_cellar.photos import MAX_PHOTO_BYTES, InvalidPhotoError, PhotoStore, sniff
+from wine_cellar.photos import MAX_PHOTO_BYTES, InvalidPhotoError, PhotoStore, photo_id_of, sniff
 from wine_cellar.repository import WineRepository
-from wine_cellar.service import PhotosDisabledError, WineNotFoundError, WineService
+from wine_cellar.service import PhotoNotFoundError, PhotosDisabledError, WineNotFoundError, WineService
 from wine_cellar.vectors import Embedder, WinePhotoIndex, WineTextIndex
 
 from .fakes import FakeBedrock, FakeS3Vectors
@@ -67,7 +67,7 @@ def test_sniff_recognises_common_formats():
 
 
 def test_add_photo_link_uploads_straight_to_the_wine(service):
-    wine, _ = service.save_wine(USER, producer="Ridge")
+    wine = service.create_wine(USER, name="Ridge")
     link = service.add_photo(USER, wine.wine_id)
     assert link.photo_ref.startswith(f"wines/{USER}/{wine.wine_id}/")
     assert BUCKET in link.upload_url and link.photo_ref in link.upload_url
@@ -80,7 +80,7 @@ def test_add_photo_needs_an_existing_wine(service):
 
 
 def test_uploaded_photo_is_saved_to_the_wine_and_indexed(service, s3, photo_vectors, bedrock):
-    wine, _ = service.save_wine(USER, producer="Ridge", name="Monte Bello")
+    wine = service.create_wine(USER, name="Ridge Monte Bello")
     first = add_photo(service, s3, wine.wine_id)
     second = add_photo(service, s3, wine.wine_id)
     service.photo_uploaded(second)  # S3 can deliver an event twice
@@ -93,15 +93,27 @@ def test_uploaded_photo_is_saved_to_the_wine_and_indexed(service, s3, photo_vect
 
 @pytest.mark.parametrize("data", [b"%PDF-1.7", b"\xff\xd8\xff" + b"x" * MAX_PHOTO_BYTES])
 def test_unusable_uploads_to_a_wine_are_discarded(service, s3, photo_vectors, data):
-    wine, _ = service.save_wine(USER, producer="Ridge")
+    wine = service.create_wine(USER, name="Ridge")
     add_photo(service, s3, wine.wine_id, data)
     assert service.get_wine(USER, wine.wine_id).photo_keys == []
     assert s3.list_objects_v2(Bucket=BUCKET).get("KeyCount") == 0
     assert photo_vectors.vectors == {}
 
 
+def test_delete_photo_removes_just_that_photo(service, s3, photo_vectors):
+    wine = service.create_wine(USER, name="Ridge")
+    keep = add_photo(service, s3, wine.wine_id)
+    wrong = add_photo(service, s3, wine.wine_id)
+    updated = service.delete_photo(USER, wine.wine_id, photo_id_of(wrong))
+    assert updated.photo_keys == [keep] == service.get_wine(USER, wine.wine_id).photo_keys
+    assert [o["Key"] for o in s3.list_objects_v2(Bucket=BUCKET)["Contents"]] == [keep]
+    assert list(photo_vectors.vectors) == [keep]
+    with pytest.raises(PhotoNotFoundError):
+        service.delete_photo(USER, wine.wine_id, photo_id_of(wrong))
+
+
 def test_photo_for_a_deleted_wine_is_discarded(service, s3):
-    wine, _ = service.save_wine(USER, producer="Ridge")
+    wine = service.create_wine(USER, name="Ridge")
     key = service.add_photo(USER, wine.wine_id).photo_ref
     service.delete_wine(USER, wine.wine_id)
     s3.put_object(Bucket=BUCKET, Key=key, Body=JPEG)
@@ -110,7 +122,7 @@ def test_photo_for_a_deleted_wine_is_discarded(service, s3):
 
 
 def test_delete_wine_removes_its_photos_and_vectors(service, s3, photo_vectors):
-    wine, _ = service.save_wine(USER, producer="Ridge")
+    wine = service.create_wine(USER, name="Ridge")
     add_photo(service, s3, wine.wine_id)
     # Uploaded, but its event hasn't run yet.
     s3.put_object(Bucket=BUCKET, Key=service.add_photo(USER, wine.wine_id).photo_ref, Body=JPEG)
@@ -152,9 +164,9 @@ def test_search_photo_is_used_once_and_never_saved(service, s3):
 
 
 def test_search_by_photo_returns_each_wine_once(service, s3, photo_vectors, bedrock):
-    ridge, _ = service.save_wine(USER, producer="Ridge")
+    ridge = service.create_wine(USER, name="Ridge")
     ridge_photos = [add_photo(service, s3, ridge.wine_id), add_photo(service, s3, ridge.wine_id)]
-    other, _ = service.save_wine(USER, producer="Lopez de Heredia")
+    other = service.create_wine(USER, name="Lopez de Heredia")
     other_photo = add_photo(service, s3, other.wine_id)
     photo_vectors.ranking = [ridge_photos[1], ridge_photos[0], other_photo]
 
@@ -165,8 +177,8 @@ def test_search_by_photo_returns_each_wine_once(service, s3, photo_vectors, bedr
 
 
 def test_search_with_photo_and_label_text_merges_both(service, s3, photo_vectors):
-    ridge, _ = service.save_wine(USER, producer="Ridge", name="Monte Bello")
-    other, _ = service.save_wine(USER, producer="Lopez de Heredia")
+    ridge = service.create_wine(USER, name="Ridge Monte Bello")
+    other = service.create_wine(USER, name="Lopez de Heredia")
     photo_vectors.ranking = [add_photo(service, s3, other.wine_id), add_photo(service, s3, ridge.wine_id)]
     # The photo alone ranks the other wine first; the label text agrees with Ridge's photo match.
     results = service.search_wines(USER, "Ridge Monte Bello", photo_ref=search_photo(service, s3))
@@ -179,7 +191,7 @@ def test_photo_search_failures_fall_back_to_text(table, s3, bedrock):
         photos=PhotoStore(s3, BUCKET),
         photo_index=WinePhotoIndex(FakeS3Vectors(fail=True), Embedder(bedrock), bucket="vb", index="wine-photos"),
     )
-    wine, _ = service.save_wine(USER, producer="Ridge")
+    wine = service.create_wine(USER, name="Ridge")
     assert [w.wine_id for w in service.search_wines(USER, "ridge", photo_ref=search_photo(service, s3))] == [
         wine.wine_id
     ]
@@ -187,7 +199,7 @@ def test_photo_search_failures_fall_back_to_text(table, s3, bedrock):
 
 def test_photos_need_a_bucket(table):
     service = WineService(WineRepository(table))
-    wine, _ = service.save_wine(USER, producer="Ridge")
+    wine = service.create_wine(USER, name="Ridge")
     with pytest.raises(PhotosDisabledError):
         service.upload_search_photo(USER)
     with pytest.raises(PhotosDisabledError):

@@ -42,20 +42,20 @@ def test_find_by_username_or_id(table):
 def test_profile_does_not_appear_as_a_wine(table):
     user = UserStore(table).create("andrew")
     service = WineService(WineRepository(table))
-    service.save_wine(user.user_id, producer="Ridge")
-    assert [w.producer for w in service.list_wines(user.user_id)] == ["Ridge"]
+    service.create_wine(user.user_id, name="Ridge")
+    assert [w.name for w in service.list_wines(user.user_id)] == ["Ridge"]
 
 
 def test_deactivate_and_reactivate_keep_wines(table):
     store = UserStore(table)
     user = store.create("andrew")
     service = WineService(WineRepository(table))
-    service.save_wine(user.user_id, producer="Ridge")
+    service.create_wine(user.user_id, name="Ridge")
 
     assert store.set_active(user.user_id, False).active is False
     assert store.find("andrew") == store.get(user.user_id)
     assert [u.active for u in store.list()] == [False]
-    assert [w.producer for w in service.list_wines(user.user_id)] == ["Ridge"]
+    assert [w.name for w in service.list_wines(user.user_id)] == ["Ridge"]
 
     assert store.set_active(user.user_id, True).active is True
 

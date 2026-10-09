@@ -1,69 +1,92 @@
-from datetime import date
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from wine_cellar.models import Style, Verdict
+from wine_cellar.models import Verdict, Wine
 from wine_cellar.service import WineNotFoundError
 
 USER = "123456"
 
 
-def test_save_creates_then_updates_same_wine(service):
-    wine, created = service.save_wine(USER, producer="Ridge", name="Monte Bello", vintage=2019, verdict=Verdict.LOVE)
-    assert created
+def test_create_then_update_only_the_given_fields(service):
+    wine = service.create_wine(USER, name=" Ridge Monte Bello ", vintage=2019, verdict=Verdict.LIKE, notes="Bold")
+    assert wine.name == "Ridge Monte Bello"
 
-    again, created_again = service.save_wine(
-        USER, producer="ridge", name="Monte-Bello", vintage=2019, notes="Even better with food"
-    )
-    assert not created_again
-    assert again.wine_id == wine.wine_id
-    assert again.verdict == Verdict.LOVE  # not cleared by an update that omitted it
-    assert again.notes == "Even better with food"
-    assert len(service.list_wines(USER)) == 1
+    updated = service.update_wine(USER, wine.wine_id, verdict=Verdict.LOVE, notes="Bold\nEven better with food")
+    assert updated.verdict == Verdict.LOVE
+    assert updated.notes == "Bold\nEven better with food"
+    assert updated.vintage == 2019  # not cleared by an update that omitted it
+    assert updated.created_at == wine.created_at
+    assert updated.updated_at > wine.updated_at
+    assert service.get_wine(USER, wine.wine_id) == updated
 
 
-def test_different_vintage_is_a_different_wine(service):
-    service.save_wine(USER, producer="Ridge", name="Monte Bello", vintage=2019)
-    _, created = service.save_wine(USER, producer="Ridge", name="Monte Bello", vintage=2018)
-    assert created
+def test_only_the_name_is_required(service):
+    wine = service.create_wine(USER, name="Monte Bello")
+    assert (wine.vintage, wine.varietal, wine.verdict, wine.notes) == (None, "", None, "")
+
+
+def test_update_unknown_wine(service):
+    with pytest.raises(WineNotFoundError):
+        service.update_wine(USER, "nope", notes="x")
 
 
 def test_users_are_isolated(service):
-    wine, _ = service.save_wine(USER, producer="Ridge", name="Monte Bello")
+    wine = service.create_wine(USER, name="Ridge Monte Bello")
     assert service.list_wines("other") == []
     with pytest.raises(WineNotFoundError):
         service.get_wine("other", wine.wine_id)
 
 
 def test_search_ranks_closest_match_first(service):
-    service.save_wine(USER, producer="Ridge", name="Monte Bello", vintage=2019, region="Santa Cruz Mountains")
-    service.save_wine(USER, producer="Lopez de Heredia", name="Viña Tondonia", vintage=2010, region="Rioja")
-    results = service.search_wines(USER, "tondonia rioja")
-    assert results[0].producer == "Lopez de Heredia"
-    assert all(r.producer != "Ridge" for r in results)
+    service.create_wine(USER, name="Ridge Monte Bello", vintage=2019)
+    service.create_wine(USER, name="Lopez de Heredia Viña Tondonia", vintage=2010)
+    results = service.search_wines(USER, "tondonia")
+    assert results[0].name == "Lopez de Heredia Viña Tondonia"
+    assert all(r.name != "Ridge Monte Bello" for r in results)
 
 
-def test_add_tasting_updates_verdict_and_history(service):
-    wine, _ = service.save_wine(USER, producer="Ridge", name="Monte Bello", verdict=Verdict.LIKE)
-    updated = service.add_tasting(
-        USER, wine.wine_id, notes="Opened up after an hour", verdict=Verdict.LOVE, tasted_on=date(2026, 10, 1)
+def test_list_filters_by_verdict_and_varietal(service):
+    service.create_wine(USER, name="A", verdict=Verdict.LOVE, varietal="Syrah")
+    service.create_wine(USER, name="B", verdict=Verdict.DISLIKE, varietal="Chardonnay")
+    assert [w.name for w in service.list_wines(USER, verdict=Verdict.LOVE)] == ["A"]
+    assert [w.name for w in service.list_wines(USER, varietal="syrah")] == ["A"]
+
+
+def test_list_filters_by_dates(service):
+    older = service.create_wine(USER, name="Older")
+    newer = service.create_wine(USER, name="Newer")
+    cutoff = older.created_at + (newer.created_at - older.created_at) / 2
+    assert [w.name for w in service.list_wines(USER, created_after=cutoff)] == ["Newer"]
+    assert [w.name for w in service.list_wines(USER, created_before=cutoff)] == ["Older"]
+
+    service.update_wine(USER, older.wine_id, notes="changed my mind")
+    assert [w.name for w in service.list_wines(USER, updated_after=newer.updated_at + timedelta(microseconds=1))] == [
+        "Older"
+    ]
+    # A naive datetime counts as UTC.
+    naive = (datetime.now(UTC) + timedelta(days=1)).replace(tzinfo=None)
+    assert service.list_wines(USER, created_after=naive) == []
+
+
+def test_reads_wines_saved_before_the_model_was_simplified():
+    wine = Wine.model_validate(
+        {
+            "wine_id": "w",
+            "user_id": USER,
+            "producer": "Ridge",
+            "name": "Monte Bello",
+            "varietals": ["Cab", "Merlot"],
+            "region": "Santa Cruz",
+            "tastings": [],
+            "rating": 5,
+        }
     )
-    assert updated.verdict == Verdict.LOVE
-    assert updated.tastings[0].tasted_on == date(2026, 10, 1)
-    assert service.get_wine(USER, wine.wine_id).tastings == updated.tastings
-
-
-def test_list_filters(service):
-    service.save_wine(USER, producer="A", style=Style.RED, verdict=Verdict.LOVE, varietals=["Syrah"], region="Rhône")
-    service.save_wine(USER, producer="B", style=Style.WHITE, verdict=Verdict.DISLIKE, varietals=["Chardonnay"])
-    assert [w.producer for w in service.list_wines(USER, verdict=Verdict.LOVE)] == ["A"]
-    assert [w.producer for w in service.list_wines(USER, style=Style.WHITE)] == ["B"]
-    assert [w.producer for w in service.list_wines(USER, varietal="syrah")] == ["A"]
-    assert [w.producer for w in service.list_wines(USER, region="rhône")] == ["A"]
+    assert (wine.name, wine.varietal) == ("Ridge Monte Bello", "Cab, Merlot")
 
 
 def test_delete(service):
-    wine, _ = service.save_wine(USER, producer="Ridge")
+    wine = service.create_wine(USER, name="Ridge")
     service.delete_wine(USER, wine.wine_id)
     with pytest.raises(WineNotFoundError):
         service.delete_wine(USER, wine.wine_id)

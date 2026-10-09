@@ -26,7 +26,7 @@ answers is "have I had this wine, and did I like it?"
 | AgentCore Gateway | Not used for now | Needs an OAuth provider (Cognito) for inbound auth and adds cost for a single client. Can front the server later without code changes. |
 | Users | Every record is keyed by our own server-generated user ID (`usr_<ulid>`), never by a chat platform's ID or a username | IDs are generated and never change; each user also has a unique username for people to read and type. Keeps the server independent of Telegram. Each user has one agent sandbox, configured with that user's token. |
 | Storage | DynamoDB on-demand, S3 for photos, S3 Vectors for embeddings | All pay-per-use and serverless. |
-| Label reading | Done by the agent, not the server | The agent's own model can read a label photo and pass the producer, name and vintage as text, so the server needs no vision model. Revisit if NemoClaw's model can't read images. |
+| Label reading | Done by the agent, not the server | The agent's own model can read a label photo and pass the name, vintage and varietal as text, so the server needs no vision model. Revisit if NemoClaw's model can't read images. |
 | Embeddings | Amazon Nova Multimodal Embeddings on Bedrock (`amazon.nova-2-multimodal-embeddings-v1:0`), 1024 dimensions | One model for wine text and label photos. |
 | Search | Vector search plus the existing fuzzy match, merged by rank (reciprocal rank fusion) | The standard hybrid search pattern. S3 Vectors has no keyword search, so the merge runs in the Lambda. |
 | IaC | AWS CDK in Python | Same language as the service; deploys from GitHub Actions. |
@@ -63,17 +63,20 @@ user ID. The profile and username items are written in one transaction with
 
 Wine item attributes:
 
-- `producer`, `name`, `vintage` (number or null for NV), `region`, `country`,
-  `varietals` (list), `style` (red, white, rosé, sparkling, dessert, fortified)
+Kept deliberately small; fields can be added when a real need comes up.
+
+- `name` (required): what the label says, as free text, e.g. "Ridge Monte
+  Bello Cabernet"
+- `vintage`: the year on the label, or null for NV
+- `varietal`: free text, e.g. "Cabernet Sauvignon" or "Grenache blend"
 - `verdict`: `love`, `like`, `meh`, `dislike`
-- `rating`: optional 1 to 5
-- `notes`: the latest summary of what the person thought
-- `tastings`: list of `{date, notes, verdict, where}` (kept small; one wine is
-  rarely tasted more than a handful of times)
-- `photo_keys`: S3 keys of label photos
-- `search_text`: lowercased producer, name, vintage and region, used for fuzzy
-  matching
-- `created_at`, `updated_at`
+- `notes`: free text. The agent adds to it rather than replacing it, unless the
+  person asks to rewrite it.
+- `photo_keys`: S3 keys of label photos; each photo's id is the ULID at the end
+  of its key, which also gives when it was added
+- `search_text`: lowercased name, vintage and varietal, used for fuzzy matching
+- `created_at`, `updated_at` (UTC): when the wine was first recorded and last
+  changed, so "the red I tried for the first time yesterday" is a date filter
 
 Text search loads the user's wines with one Query and fuzzy-matches in the
 Lambda. A personal list of a few hundred to a few thousand wines fits easily,
@@ -87,7 +90,7 @@ dimensions and cosine distance, and every query filtered to the caller's
 `user_id`:
 
 - `wine-text`: one vector per wine, keyed by `wine_id`. It embeds the label,
-  region, style, grapes, verdict, notes and tasting notes, and is rewritten
+  varietal, verdict and notes, and is rewritten
   whenever the wine changes and deleted with it.
 - `wine-photos`: one vector per photo, keyed by its S3 key, with `wine_id` as
   metadata. A wine with several photos matches through whichever is closest.
@@ -101,12 +104,13 @@ vectors.
 
 | Tool | What it does |
 | --- | --- |
-| `save_wine` | Create or update a wine with a verdict, rating and notes. Matches an existing wine first so repeats don't create duplicates. |
-| `add_tasting` | Add a dated tasting note and verdict to a wine. |
+| `create_wine` | Record a wine; only `name` is required. The agent searches first so repeats don't create duplicates. |
+| `update_wine` | Change any field, e.g. a new verdict or more notes. Omitted fields are kept. |
 | `search_wines` | Search by text, a label photo, or both, e.g. "that bold red I loved" or a photo plus what the agent read off the label. Returns ranked matches with verdicts and notes. |
 | `add_photo` | Add a label photo to a wine: returns an upload link, and the photo is saved to the wine once uploaded. A wine can have several. |
+| `delete_photo` | Remove a photo from a wine, e.g. one added by mistake. |
 | `upload_search_photo` | Get an upload link and `photo_ref` for a photo to search with. Never saved. |
-| `list_wines` | Filter by verdict, style, region or varietal. |
+| `list_wines` | Filter by verdict, varietal, and created or updated dates. |
 | `get_wine` / `delete_wine` | Fetch or remove one wine. |
 
 No tool takes a user ID. The bearer token identifies the user, so the user is

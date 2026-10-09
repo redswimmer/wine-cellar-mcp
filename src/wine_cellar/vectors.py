@@ -53,16 +53,15 @@ class Embedder:
 def wine_text(wine: Wine) -> str:
     """What a wine's text vector describes: the label plus everything the person said about it."""
     lines = [wine.label]
-    for label, value in [
-        ("Region", ", ".join(p for p in [wine.region, wine.country] if p)),
-        ("Style", wine.style or ""),
-        ("Grapes", ", ".join(wine.varietals)),
-        ("Verdict", wine.verdict or ""),
-        ("Notes", wine.notes),
-    ]:
-        if value:
-            lines.append(f"{label}: {value}")
-    lines.extend(f"Tasting: {t.notes}" for t in wine.tastings if t.notes and t.notes != wine.notes)
+    lines.extend(
+        f"{label}: {value}"
+        for label, value in [
+            ("Varietal", wine.varietal),
+            ("Verdict", wine.verdict or ""),
+            ("Notes", wine.notes),
+        ]
+        if value
+    )
     return "\n".join(lines)
 
 

@@ -12,18 +12,19 @@ from mcp.client.streamable_http import create_mcp_http_client, streamable_http_c
 pytestmark = pytest.mark.anyio
 
 EXPECTED_TOOLS = {
-    "save_wine",
+    "create_wine",
+    "update_wine",
     "add_photo",
+    "delete_photo",
     "upload_search_photo",
-    "add_tasting",
     "search_wines",
     "list_wines",
     "get_wine",
     "delete_wine",
 }
 LABEL = Path(__file__).with_name("label.jpg")
-PRODUCER = "Smoke Test Cellars"
-TEST_WINE = {"producer": PRODUCER, "name": "Smoke Test Red", "vintage": 2020, "verdict": "like"}
+NAME = "Smoke Test Cellars Red"
+TEST_WINE = {"name": NAME, "vintage": 2020, "verdict": "like"}
 INITIALIZE = {
     "jsonrpc": "2.0",
     "id": 1,
@@ -71,15 +72,16 @@ async def test_lists_the_tools_with_no_user_parameter(url, token):
     assert not [t.name for t in tools if any("user" in p for p in t.input_schema.get("properties", {}))]
 
 
-async def test_save_search_get_delete_round_trip(url, token):
+async def test_create_update_search_delete_round_trip(url, token):
     async with session(url, token) as s:
-        wine_id = (await call(s, "save_wine", TEST_WINE))["wine"]["wine_id"]
+        wine_id = (await call(s, "create_wine", TEST_WINE))["wine"]["wine_id"]
         try:
-            assert wine_id in await search_ids(s, PRODUCER)
-            assert (await call(s, "get_wine", {"wine_id": wine_id}))["wine"]["wine_id"] == wine_id
+            assert wine_id in await search_ids(s, NAME)
+            await call(s, "update_wine", {"wine_id": wine_id, "verdict": "love"})
+            assert (await call(s, "get_wine", {"wine_id": wine_id}))["wine"]["verdict"] == "love"
         finally:
             await call(s, "delete_wine", {"wine_id": wine_id})
-        assert wine_id not in await search_ids(s, PRODUCER)
+        assert wine_id not in await search_ids(s, NAME)
 
 
 async def put_label(upload_url: str) -> None:
@@ -90,11 +92,11 @@ async def put_label(upload_url: str) -> None:
 
 async def test_add_photo_then_search_by_photo(url, token):
     async with session(url, token) as s:
-        wine_id = (await call(s, "save_wine", TEST_WINE))["wine"]["wine_id"]
+        wine_id = (await call(s, "create_wine", TEST_WINE))["wine"]["wine_id"]
         try:
             await put_label((await call(s, "add_photo", {"wine_id": wine_id}))["upload_url"])
             for _ in range(20):  # the upload event records the photo a few seconds later
-                if (await call(s, "get_wine", {"wine_id": wine_id}))["wine"]["photo_count"]:
+                if (await call(s, "get_wine", {"wine_id": wine_id}))["wine"]["photos"]:
                     break
                 await asyncio.sleep(1)
             else:
