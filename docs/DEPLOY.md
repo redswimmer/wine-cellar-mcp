@@ -126,6 +126,26 @@ Actions → Deploy → Run workflow → pick the branch, `stage: dev`. Useful fo
 trying an infrastructure change before merging it. The next merge to `main`
 puts dev back on `main`.
 
+## Tracing
+
+Each deploy also deploys `WineCellar-Observability`, which turns on X-Ray
+Transaction Search for the whole account and region: every trace is stored
+as spans in the `aws/spans` log group (X-Ray creates it), and 1% are indexed
+as searchable trace summaries. View traces in CloudWatch → Transaction
+Search or the trace map.
+
+CloudFormation can't take over Transaction Search if it was turned on outside
+the stack (the console, or the AgentCore starter toolkit, does this). Turn it
+off once before the first deploy that includes this stack, and remove the
+policy that setup left behind:
+
+```
+aws xray update-trace-segment-destination --destination XRay
+aws logs delete-resource-policy --policy-name TransactionSearchXRayAccess
+```
+
+`aws xray get-trace-segment-destination` printing `XRay` means it's off.
+
 ## Notes
 
 - The first deploy with a custom domain waits for the ACM certificate's DNS

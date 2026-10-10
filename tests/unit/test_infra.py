@@ -5,6 +5,7 @@ import pytest
 from aws_cdk.assertions import Match, Template
 
 from infra.stacks.github_oidc_stack import GithubOidcStack
+from infra.stacks.observability_stack import ObservabilityStack
 from infra.stacks.service_stack import DomainConfig, ServiceConfig, WineCellarServiceStack
 
 ENV = cdk.Environment(account="111111111111", region="us-east-1")
@@ -198,3 +199,12 @@ def test_oidc_role_trusts_only_repo_environments():
 
 def test_no_shared_secret(asset_dir):
     _service(asset_dir).resource_count_is("AWS::SecretsManager::Secret", 0)
+
+
+def test_transaction_search_is_enabled_after_its_logs_policy():
+    t = Template.from_stack(ObservabilityStack(cdk.App(), "T", env=ENV))
+    t.has_resource_properties("AWS::Logs::ResourcePolicy", {"PolicyName": "TransactionSearchAccess"})
+    t.has_resource(
+        "AWS::XRay::TransactionSearchConfig",
+        {"Properties": {"IndexingPercentage": 1}, "DependsOn": [Match.string_like_regexp("XRayWritesSpans")]},
+    )
