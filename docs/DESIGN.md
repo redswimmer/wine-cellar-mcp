@@ -36,6 +36,8 @@ answers is "have I had this wine, and did I like it?"
 
 ## Architecture
 
+Full diagram (runtime, code layers, deploy flow, stages): [Wine Cellar MCP Architecture](https://claude.ai/artifact/Jpn9QzHK8m8ARNzHHHggX4).
+
 ```
 User ──▶ Agent (any MCP client) ──HTTPS + bearer──▶ API Gateway (HTTP API, custom domain)
                                                       │
