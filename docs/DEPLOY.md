@@ -98,7 +98,7 @@ uv run wine-tokens --stage dev add-user --username andrew --label andrew-agent
 ```
 
 How to give the token to an agent depends on the agent; see
-[Connecting clients](DESIGN.md#connecting-clients) for Claude Code and NemoClaw.
+[the README](../README.md#connect-your-agent) for Claude Code and NemoClaw.
 
 `list-users` and `list-tokens` show what exists, `revoke-token <hash-prefix>`
 revokes a token within a minute, and `create-token --user <username> --label ...`

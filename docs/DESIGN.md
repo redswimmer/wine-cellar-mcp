@@ -3,8 +3,8 @@
 A small AWS serverless service that lets an AI agent remember which wines a
 person likes. People talk to the agent however that agent allows, by text or
 by sending a photo of a label. The service is agent-agnostic: any MCP client
-can use it, and Claude Code and NemoClaw are covered under
-[Connecting clients](#connecting-clients) as examples.
+can use it, and Claude Code and NemoClaw are covered in the
+[README](../README.md#connect-your-agent) as examples.
 
 This is a preference tracker, not an inventory system. The core question it
 answers is "have I had this wine, and did I like it?"
@@ -192,7 +192,7 @@ an AWS role through OIDC, so there are no long-lived keys. Setup is in
 with API Gateway events against moto, which covers the HTTP, auth and MCP
 layers without deploying. `tests/e2e` holds end-to-end smoke tests against a
 deployed endpoint; the Deploy workflow runs them after every dev deploy, and
-they can also be run by hand (see [Connecting clients](#connecting-clients)).
+they can also be run by hand (see [CONTRIBUTING.md](../CONTRIBUTING.md#checks)).
 
 The code is layered: Lambda entry points, then `bootstrap` (the only place AWS
 clients are built), the MCP tools, the service, the stores, and the domain model.
@@ -259,42 +259,8 @@ their wines would share one user ID; give each person their own token.
 ## Connecting clients
 
 Any MCP client that speaks Streamable HTTP and can send an `Authorization`
-header works. To check a deployment end to end without a client, run
-`uv run pytest tests/e2e`. These end-to-end tests call the deployed endpoint
-(`$WINE_MCP_URL`, the stack's `McpUrl` output) with the token in `$WINE_MCP_TOKEN` or
-`~/.config/wine-cellar/dev-token`, skip locally when either is missing, and
-delete their test wines. Plain `uv run pytest` runs only the unit tests.
-
-### Claude Code
-
-Add the server in local scope, which keeps the token in `~/.claude.json` and
-out of the repo. Don't use `-s project`; that writes the token to `.mcp.json`.
-
-```
-claude mcp add --transport http wine https://<dev-domain>/mcp \
-  --header "Authorization: Bearer $(cat ~/.config/wine-cellar/dev-token)"
-claude mcp get wine
-```
-
-Start a new `claude` session in the same folder and talk to it normally; it
-picks the tools from their descriptions.
-
-### NemoClaw (OpenClaw)
-
-NemoClaw supports remote MCP servers over HTTPS with Streamable HTTP and puts
-the token in the `Authorization` header. The raw token stays in OpenShell's
-provider store; the agent config holds only a placeholder:
-
-```
-export WINE_MCP_TOKEN=$(uv run wine-tokens --stage prod add-user --username andrew --label andrew-nemoclaw)
-nemoclaw <sandbox> mcp add wine --url https://<prod-domain>/mcp --env WINE_MCP_TOKEN
-unset WINE_MCP_TOKEN
-```
-
-NemoClaw rejects URLs with query strings, so the token can only go in the
-header. That matches the bearer check above. NemoClaw caps MCP request bodies
-at 131,072 bytes, which photo uploads avoid because they go straight to S3, and
-the sandbox needs egress to the S3 endpoint for those uploads.
+header works. Setup for Claude Code and NemoClaw is in the
+[README](../README.md#connect-your-agent).
 
 ## Environment
 
