@@ -25,8 +25,24 @@ from .service import (
 )
 
 INSTRUCTIONS = """\
-Remembers which wines the user has tried and what they thought of them.
-Before creating a wine, use search_wines to check whether it is already recorded; if it is, update it instead.
+Remembers wines the person has tried and what they thought of them: a verdict (love, like, meh, dislike), notes and \
+label photos.
+
+Recipes:
+- "Do I like this?" from a label photo: upload_search_photo, PUT the photo to upload_url, then search_wines with \
+photo_ref plus the name and vintage you read off the label. The closest wines come back even when none is this wine, \
+so check before answering; if it isn't recorded, say so.
+- Photo with no readable label (a glass, a blurry or far-off bottle): don't guess the wine. Ask for a clear photo of \
+the bottle's label.
+- Wine list, menu or shelf with several wines: read each name off it and search_wines with that text (no photo_ref; a \
+menu photo won't match label photos). Answer with the ones that really match and their verdicts.
+- Add a wine (from a photo or a name): search_wines first. If it's recorded, update_wine; otherwise create_wine with \
+what you read off the label. If they sent a label photo, always add_photo and PUT it to upload_url, so the next photo \
+lookup finds it.
+- Add a note: update_wine with the existing notes plus the new part appended.
+- Change one thing (verdict, vintage, a label fix): update_wine with only that field.
+- Browse: list_wines filters by verdict, varietal and when a wine was first recorded or last changed; pass next_token \
+back for more. For descriptions like "that bold red I loved", use search_wines.
 """
 
 WineId = Annotated[str, Field(description="wine_id returned by another tool")]
@@ -252,7 +268,7 @@ def build_server(service: WineService) -> MCPServer:
     @mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
     @_agent_errors
     def delete_wine(ctx: Context, wine_id: WineId) -> dict[str, Any]:
-        """Permanently remove a wine. Only use when the person explicitly asks."""
+        """Permanently remove a wine."""
         service.delete_wine(current_user(ctx), wine_id)
         return {"deleted": wine_id}
 
