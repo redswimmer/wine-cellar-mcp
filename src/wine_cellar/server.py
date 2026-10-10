@@ -50,9 +50,7 @@ NAME_DESCRIPTION = "What the label says, e.g. 'Ridge Monte Bello Cabernet'"
 VINTAGE_DESCRIPTION = "Year on the label"
 VARIETAL_DESCRIPTION = "Grape or blend, e.g. 'Cabernet Sauvignon' or 'Grenache blend'"
 VERDICT_DESCRIPTION = "How the person feels about it"
-PhotoRef = Annotated[
-    str | None, Field(description="photo_ref from upload_search_photo, after uploading the photo to its upload_url")
-]
+PhotoRef = Annotated[str | None, Field(description="photo_ref from upload_search_photo, once the photo is uploaded")]
 # Mistakes the agent can fix (unknown wine, no name, bad or missing upload, photos off) come back as tool errors.
 AGENT_ERRORS = (
     WineNotFoundError,
@@ -118,12 +116,7 @@ def build_server(service: WineService) -> MCPServer:
         verdict: Annotated[Verdict | None, Field(description=VERDICT_DESCRIPTION)] = None,
         notes: Annotated[str, Field(description="What the person said about it")] = "",
     ) -> dict[str, Any]:
-        """Record a wine the person tried and what they thought of it.
-
-        Search first: if the wine is already recorded, use update_wine instead. Read the name, vintage and varietal
-        off the label yourself; only the name is required, so leave out anything you can't read (and the vintage for
-        non-vintage wines). To keep the label photo, call add_photo next.
-        """
+        """Record a wine the person tried and what they thought of it. Only the name is required."""
         wine = service.create_wine(
             current_user(ctx), name=name, vintage=vintage, varietal=varietal, verdict=verdict, notes=notes
         )
@@ -142,12 +135,11 @@ def build_server(service: WineService) -> MCPServer:
             str | None,
             Field(
                 default_factory=_unset,
-                description="Replaces the notes. To add to them, send the existing notes with the new part "
-                "appended; only rewrite them if the person asks.",
+                description="Replaces the notes",
             ),
         ],
     ) -> dict[str, Any]:
-        """Change a recorded wine, e.g. the person changed their mind, added a note or corrected the label.
+        """Change a recorded wine.
 
         A partial update: send only the fields that change, and every field left out keeps its value. Send null to
         empty a field, e.g. vintage null when the person says it's non-vintage. The name can't be emptied.
@@ -182,7 +174,7 @@ def build_server(service: WineService) -> MCPServer:
         wine_id: WineId,
         photo_id: Annotated[str, Field(description="photo_id from the wine's photos")],
     ) -> dict[str, Any]:
-        """Remove a photo from a wine, e.g. one added by mistake. The latest photo has the latest added_at."""
+        """Remove a photo from a wine."""
         wine = service.delete_photo(current_user(ctx), wine_id, photo_id)
         return {"wine": _summary(wine)}
 
@@ -191,8 +183,8 @@ def build_server(service: WineService) -> MCPServer:
     def upload_search_photo(ctx: Context) -> dict[str, Any]:
         """Get a link for uploading a photo to search with. The photo is used for one search and never saved.
 
-        PUT the image file to upload_url (for example `curl -sSf --upload-file label.jpg "<upload_url>"`), then pass
-        photo_ref to search_wines. JPEG, PNG, WebP or GIF up to max_bytes.
+        PUT the image file to upload_url (for example `curl -sSf --upload-file label.jpg "<upload_url>"`). JPEG, PNG,
+        WebP or GIF up to max_bytes.
         """
         upload = service.upload_search_photo(current_user(ctx))
         return {"photo_ref": upload.photo_ref, **_upload(upload)}
@@ -205,7 +197,7 @@ def build_server(service: WineService) -> MCPServer:
             str,
             Field(
                 description="Free text, matched by name and by meaning: a wine's name, "
-                "or a description like 'that bold red I loved'. With a photo, also pass what the label says."
+                "or a description like 'that bold red I loved'"
             ),
         ] = "",
         photo_ref: PhotoRef = None,
@@ -214,9 +206,8 @@ def build_server(service: WineService) -> MCPServer:
         """Find wines the person has recorded, best match first, with their verdicts and notes.
 
         Give text, a label photo, or both. Text matches names (typos and partial names are fine) and meaning, using
-        the person's notes too; a photo matches the label photos they saved. For "do I like this wine?" from a photo,
-        upload it (see upload_search_photo) and pass its photo_ref plus the name and vintage you read off the label.
-        The closest wines come back even when none is a real match, so check them before relying on one.
+        the person's notes too; a photo matches the label photos they saved. The closest wines come back even when
+        none is a real match.
         """
         if not query.strip() and not photo_ref:
             raise ToolError("Give a query, a photo_ref, or both")
@@ -242,9 +233,7 @@ def build_server(service: WineService) -> MCPServer:
 
         A next_token in the result means there are more wines; pass it back with the same filters to get them.
 
-        Dates are when a wine was first recorded (created) and last changed (updated). For "the wine I tried for the
-        first time yesterday", filter on created_after/created_before. To find wines by description, use
-        search_wines.
+        Dates are when a wine was first recorded (created) and last changed (updated).
         """
         wines, token = service.list_wines(
             current_user(ctx),
