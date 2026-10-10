@@ -81,17 +81,17 @@ jobs:
 
   e2e:
     needs: deploy
-    if: (inputs.stage || 'dev') == 'dev'
     runs-on: ubuntu-latest
-    environment: dev
+    environment: ${{ inputs.stage || 'dev' }}
     env:
+      STAGE: ${{ inputs.stage || 'dev' }}
       WINE_MCP_TOKEN: ${{ secrets.WINE_MCP_TOKEN }}
       WINE_MCP_URL: ${{ needs.deploy.outputs.mcp_url }}
     steps:
       - name: Check token and URL
         run: |
           if [ -z "$WINE_MCP_TOKEN" ]; then
-            echo "::error::WINE_MCP_TOKEN is not set on the dev environment, so e2e tests can't run. See docs/DEPLOY.md."
+            echo "::error::WINE_MCP_TOKEN is not set on the ${STAGE} environment, so e2e tests can't run. See docs/DEPLOY.md."
             exit 1
           fi
           if [ -z "$WINE_MCP_URL" ]; then
@@ -102,7 +102,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - name: E2E tests against dev
+      - name: E2E tests against ${{ env.STAGE }}
         run: |
           uv sync --frozen
           uv run pytest tests/e2e
