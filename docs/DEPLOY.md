@@ -75,9 +75,13 @@ error means it's time to run `aws sso login` again.
    - Variable (Actions, repository level): `AWS_DEPLOY_ROLE_ARN` = the role
      ARN from step 3. That's the only variable; the rest is in `cdk.json`.
 
-   - Secret (Environments → `dev`): `WINE_MCP_TOKEN` = a dev token for a
-     dedicated test user, used by the e2e tests after each dev deploy:
-     `uv run wine-tokens --stage dev add-user --username ci --label github-e2e`
+   - Secret (Environments → `dev`, and later `prod`): `WINE_MCP_TOKEN` = a
+     token for a dedicated test user in that stage, used by the e2e tests
+     after each deploy:
+     `uv run wine-tokens --stage <stage> add-user --username ci --label github-e2e`
+     The tests only touch wines named `Smoke Test Cellars Red…`, delete each
+     one when done, and sweep any leftovers from a cancelled run first, so the
+     `ci` user's cellar stays empty and no real user's wines are touched.
 
 Until `AWS_DEPLOY_ROLE_ARN` is set, the deploy job skips with a warning
 instead of failing. The e2e job fails if `WINE_MCP_TOKEN` is missing, so a
@@ -105,6 +109,16 @@ revokes a token within a minute, and `create-token --user <username> --label ...
 issues a replacement for an existing user (their wines stay put).
 `deactivate-user --user <username>` locks a user out without deleting their
 wines; `reactivate-user` lets them back in with their existing tokens.
+
+## Deploying to prod
+
+Actions → Deploy → Run workflow → branch `main`, `stage: prod`. The run
+checks, deploys `WineCellar-prod`, then runs the e2e tests against it.
+
+The first prod deploy creates the prod table, so the `ci` user can't exist
+yet and its e2e job fails on the missing token. After that deploy, add the
+user with `--stage prod` (step 4), set `WINE_MCP_TOKEN` on the `prod`
+environment, and re-run the failed job.
 
 ## Deploying a branch to dev
 
