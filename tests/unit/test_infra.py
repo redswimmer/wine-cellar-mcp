@@ -43,8 +43,10 @@ def test_lambda_is_arm64_python_with_env(asset_dir):
                     "TEXT_INDEX": "wine-text",
                     "PHOTO_INDEX": "wine-photos",
                     "PHOTO_BUCKET": Match.any_value(),
+                    "POWERTOOLS_SERVICE_NAME": "wine-cellar",
                 }
             },
+            "TracingConfig": {"Mode": "Active"},
         },
     )
 
