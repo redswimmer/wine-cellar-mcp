@@ -1,4 +1,4 @@
-# wine-cellar-mcp
+# Wine Cellar MCP: a wine memory for your AI agent
 
 ![You ask your AI agent about wines; it saves them to your wine cellar and searches it by words or by label photo](docs/images/how-it-works.svg)
 
