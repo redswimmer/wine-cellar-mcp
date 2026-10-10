@@ -5,6 +5,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Annotated, Any
 
+from aws_lambda_powertools import Tracer
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
@@ -67,6 +68,8 @@ class _Unset:
 
 
 UNSET = _Unset()
+# Disabled outside Lambda (tests, the CLI); in Lambda it adds to the trace each invocation already has.
+tracer = Tracer()
 
 
 def _unset() -> Any:
@@ -82,6 +85,19 @@ def _agent_errors[**P, R](tool: Callable[P, R]) -> Callable[P, R]:
             return tool(*args, **kwargs)
         except AGENT_ERRORS as e:
             raise ToolError(str(e)) from e
+
+    return wrapper
+
+
+def _traced[**P, R](tool: Callable[P, R]) -> Callable[P, R]:
+    """Record each call as an X-Ray subsegment named after the tool, with a `tool` annotation to filter traces by."""
+
+    @functools.wraps(tool)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        # wraps() copied the tool's name onto the wrapper.
+        with tracer.provider.in_subsegment(f"## {wrapper.__name__}") as subsegment:
+            subsegment.put_annotation("tool", wrapper.__name__)
+            return tool(*args, **kwargs)
 
     return wrapper
 
@@ -107,6 +123,7 @@ def build_server(service: WineService) -> MCPServer:
     mcp = MCPServer(name="wine-cellar", instructions=INSTRUCTIONS)
 
     @mcp.tool()
+    @_traced
     @_agent_errors
     def create_wine(
         ctx: Context,
@@ -123,6 +140,7 @@ def build_server(service: WineService) -> MCPServer:
         return {"wine": _summary(wine)}
 
     @mcp.tool(annotations=ToolAnnotations(idempotent_hint=True))
+    @_traced
     @_agent_errors
     def update_wine(
         ctx: Context,
@@ -157,6 +175,7 @@ def build_server(service: WineService) -> MCPServer:
         }
 
     @mcp.tool()
+    @_traced
     @_agent_errors
     def add_photo(ctx: Context, wine_id: WineId) -> dict[str, Any]:
         """Add a label photo to a wine: returns a link, and the photo is saved to the wine once uploaded to it.
@@ -168,6 +187,7 @@ def build_server(service: WineService) -> MCPServer:
         return _upload(service.add_photo(current_user(ctx), wine_id))
 
     @mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
+    @_traced
     @_agent_errors
     def delete_photo(
         ctx: Context,
@@ -179,6 +199,7 @@ def build_server(service: WineService) -> MCPServer:
         return {"wine": _summary(wine)}
 
     @mcp.tool()
+    @_traced
     @_agent_errors
     def upload_search_photo(ctx: Context) -> dict[str, Any]:
         """Get a link for uploading a photo to search with. The photo is used for one search and never saved.
@@ -190,6 +211,7 @@ def build_server(service: WineService) -> MCPServer:
         return {"photo_ref": upload.photo_ref, **_upload(upload)}
 
     @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+    @_traced
     @_agent_errors
     def search_wines(
         ctx: Context,
@@ -215,6 +237,7 @@ def build_server(service: WineService) -> MCPServer:
         return {"matches": [_summary(w) for w in matches]}
 
     @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+    @_traced
     @_agent_errors
     def list_wines(
         ctx: Context,
@@ -249,12 +272,14 @@ def build_server(service: WineService) -> MCPServer:
         return {"wines": [_summary(w) for w in wines], "next_token": token}
 
     @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+    @_traced
     @_agent_errors
     def get_wine(ctx: Context, wine_id: WineId) -> dict[str, Any]:
         """Fetch one wine."""
         return {"wine": _summary(service.get_wine(current_user(ctx), wine_id))}
 
     @mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
+    @_traced
     @_agent_errors
     def delete_wine(ctx: Context, wine_id: WineId) -> dict[str, Any]:
         """Permanently remove a wine."""

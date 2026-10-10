@@ -16,6 +16,7 @@ import os
 import aws_cdk as cdk
 
 from infra.stacks.github_oidc_stack import GithubOidcStack
+from infra.stacks.observability_stack import ObservabilityStack
 from infra.stacks.service_stack import DomainConfig, ServiceConfig, WineCellarServiceStack
 
 
@@ -53,6 +54,8 @@ def main() -> None:
         environments=list(stages),
         existing_provider_arn=app.node.try_get_context("oidcProviderArn"),
     )
+    # Account-wide, so one stack serves every stage.
+    ObservabilityStack(app, "WineCellar-Observability", env=env)
     cdk.Tags.of(app).add("project", "wine-cellar")
     app.synth()
 

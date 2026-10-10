@@ -107,6 +107,8 @@ class WineCellarServiceStack(Stack):
             "TEXT_INDEX": TEXT_INDEX_NAME,
             "PHOTO_INDEX": PHOTO_INDEX_NAME,
             "PHOTO_BUCKET": photo_bucket.bucket_name,
+            # Powertools tags logs and traces with this.
+            "POWERTOOLS_SERVICE_NAME": "wine-cellar",
         }
         code = lambda_.Code.from_asset(config.lambda_asset_path)
 
@@ -121,6 +123,7 @@ class WineCellarServiceStack(Stack):
                 memory_size=512,
                 timeout=timeout,
                 environment=environment,
+                tracing=lambda_.Tracing.ACTIVE,
                 log_group=logs.LogGroup(
                     self,
                     f"{construct_id.removesuffix('Function')}Logs",

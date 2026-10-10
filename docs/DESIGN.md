@@ -161,6 +161,16 @@ The agent needs network access to the S3 endpoint to upload.
   Bedrock embedding model.
 - S3 bucket blocks public access and encrypts at rest.
 
+## Observability
+
+Both Lambdas have X-Ray active tracing. Each request is a trace with the
+DynamoDB, S3, S3 Vectors and Bedrock calls as timed subsegments, and each MCP
+tool call is a `## <tool>` subsegment with a `tool` annotation, so traces can
+be filtered with `annotation.tool = "search_wines"`. Powertools for AWS Lambda
+does the tracing and writes JSON logs tagged with the request ID and cold
+start. At personal volume this stays inside the X-Ray free tier (100k traces a
+month).
+
 ## Cost and latency
 
 All services bill per request or per GB stored, so an idle service costs
