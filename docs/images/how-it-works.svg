@@ -9,7 +9,7 @@
   <g transform="translate(40,80)">
     <rect width="240" height="340" rx="14" fill="#fff" stroke="#e6d9cf"/>
     <text x="120" y="36" text-anchor="middle" font-size="18" font-weight="700" fill="#3b1f2b">You</text>
-    <text x="120" y="58" text-anchor="middle" font-size="13" fill="#7a6a6e">talk or snap a photo</text>
+    <text x="120" y="58" text-anchor="middle" font-size="13" fill="#7a6a6e">talk or snap a label photo</text>
     <rect x="16" y="80" width="208" height="62" rx="12" fill="#f3e6e8"/>
     <text x="28" y="105" font-size="14" fill="#3b1f2b">"Loved this Rioja.</text>
     <text x="28" y="126" font-size="14" fill="#3b1f2b">Smoky, great with lamb."</text>
