@@ -2,6 +2,7 @@
 
 import base64
 import binascii
+import contextlib
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -12,11 +13,14 @@ from ulid import ULID
 
 from . import search
 from .models import InvalidPhotoError, Upload, Verdict, Wine, photo_id_of
-from .photos import PhotoStore, wine_photo_owner
-from .repository import WineRepository
+from .photos import MAX_PHOTOS_PER_WINE, PhotoStore, wine_photo_owner
+from .repository import WineRepository, WriteConflictError
 from .vectors import WinePhotoIndex, WineTextIndex
 
 log = logging.getLogger(__name__)
+
+# How many times a write is retried when another write to the same wine got there first.
+WRITE_ATTEMPTS = 3
 
 
 class WineNotFoundError(LookupError):
@@ -62,13 +66,30 @@ class WineService:
         self._photos = photos
         self._photo_index = photo_index
 
-    def _save(self, wine: Wine) -> None:
-        """Store a wine, then refresh its text vector.
+    def _modify(self, user_id: str, wine_id: str, change: Callable[[Wine], Wine]) -> Wine:
+        """Read a wine, apply `change` and store the result, starting over if another write got there first.
+
+        `change` may run more than once, so it must only compute the new wine from the one it is given. Returning
+        the wine unchanged skips the write.
+        """
+        for attempt in range(1, WRITE_ATTEMPTS + 1):
+            wine = self.get_wine(user_id, wine_id)
+            changed = change(wine)
+            if changed is wine:
+                return wine
+            try:
+                return self._repo.put(changed)
+            except WriteConflictError:
+                if attempt == WRITE_ATTEMPTS:
+                    raise
+        raise AssertionError("unreachable")
+
+    def _index_text(self, wine: Wine) -> None:
+        """Refresh a wine's text vector.
 
         DynamoDB is the source of truth, so a failed vector write is logged rather than failing the save;
         `wine-tokens reindex` repairs the index.
         """
-        self._repo.put(wine)
         text_index = self._text_index
         if text_index is not None:
             _best_effort(lambda: text_index.upsert(wine), f"Text vector upsert for wine {wine.wine_id}")
@@ -90,22 +111,26 @@ class WineService:
             verdict=verdict,
             notes=notes.strip(),
         )
-        self._save(wine)
+        wine = self._repo.put(wine)
+        self._index_text(wine)
         return wine
 
     def update_wine(self, user_id: str, wine_id: str, **changes: Any) -> Wine:
         """Partial update: only the given fields change, and a field given as None is emptied."""
-        wine = self.get_wine(user_id, wine_id)
         if "name" in changes:
             changes["name"] = _required_name(changes["name"])
         changes = {k: _empty(k) if v is None else v.strip() if type(v) is str else v for k, v in changes.items()}
-        updated = Wine.model_validate({**wine.model_dump(), **changes, "updated_at": datetime.now(UTC)})
-        self._save(updated)
+        updated = self._modify(
+            user_id,
+            wine_id,
+            lambda wine: Wine.model_validate({**wine.model_dump(), **changes, "updated_at": datetime.now(UTC)}),
+        )
+        self._index_text(updated)
         return updated
 
     def add_photo(self, user_id: str, wine_id: str) -> Upload:
         """An upload link that saves a photo to this wine. `photo_uploaded` finishes the job once the file lands."""
-        self.get_wine(user_id, wine_id)
+        _check_room_for_photo(self.get_wine(user_id, wine_id))
         return self._photo_store().create_wine_upload(user_id, wine_id)
 
     def photo_url(self, key: str) -> str | None:
@@ -121,41 +146,41 @@ class WineService:
         return self._photos
 
     def photo_uploaded(self, key: str) -> None:
-        """Record and index a photo uploaded to a wine's link (run from the S3 upload event).
+        """Index and record a photo uploaded to a wine's link (run from the S3 upload event).
 
-        A file that isn't a usable image, or whose wine was deleted meanwhile, is removed. Errors are raised, not
-        logged, so the event is retried; every step is safe to repeat.
+        A file that isn't a usable image, that the wine has no room for, or whose wine was deleted meanwhile, is
+        removed, along with any record of it. Indexing comes first, so a photo is only recorded once it can be
+        searched with. Errors are raised, not logged, so the event is retried; every step is safe to repeat.
         """
         owner = wine_photo_owner(key)
         if owner is None:
             log.warning("Ignoring upload outside wines/: %s", key)
             return
         user_id, wine_id = owner
-        photos = self._photo_store()
-        wine = self._repo.get(user_id, wine_id)
         try:
-            photo = photos.get(key)
-        except InvalidPhotoError as e:
-            log.warning("Removing unusable photo %s: %s", key, e)
-            wine = None
-        if wine is None:
-            photos.delete([key])
-            return
-        if key not in wine.photo_keys:
-            wine = wine.model_copy(update={"photo_keys": [*wine.photo_keys, key], "updated_at": datetime.now(UTC)})
-            self._repo.put(wine)  # the text vector doesn't describe photos, so it needs no refresh
+            photo = self._photo_store().get(key)
+            if self._photo_index is not None:
+                self._photo_index.upsert(key, photo.data, photo.format, user_id=user_id, wine_id=wine_id)
+            # The text vector doesn't describe photos, so it needs no refresh.
+            self._modify(user_id, wine_id, partial(_with_photo, key=key))
+        except (InvalidPhotoError, WineNotFoundError) as e:
+            log.warning("Removing photo %s: %s", key, e)
+            self._discard_photo(user_id, wine_id, key)
+
+    def _discard_photo(self, user_id: str, wine_id: str, key: str) -> None:
+        """Remove an uploaded photo everywhere: from its wine (if it was recorded), its vector and its file."""
+        with contextlib.suppress(WineNotFoundError):
+            self._modify(user_id, wine_id, partial(_without_photo, key=key))
         if self._photo_index is not None:
-            self._photo_index.upsert(key, photo.data, photo.format, user_id=user_id, wine_id=wine_id)
+            self._photo_index.delete([key])
+        self._photo_store().delete([key])
 
     def delete_photo(self, user_id: str, wine_id: str, photo_id: str) -> Wine:
         wine = self.get_wine(user_id, wine_id)
         key = next((k for k in wine.photo_keys if photo_id_of(k) == photo_id), None)
         if key is None:
             raise PhotoNotFoundError(f"Wine {wine_id} has no photo {photo_id}")
-        updated = wine.model_copy(
-            update={"photo_keys": [k for k in wine.photo_keys if k != key], "updated_at": datetime.now(UTC)}
-        )
-        self._repo.put(updated)
+        updated = self._modify(user_id, wine_id, partial(_without_photo, key=key))
         photo_index, photos = self._photo_index, self._photos
         if photo_index is not None:
             _best_effort(lambda: photo_index.delete([key]), f"Photo vector delete for {key}")
@@ -224,8 +249,11 @@ class WineService:
             if text_index is not None:
                 rankings.append(_best_effort(lambda: text_index.query(user_id, query), "Text vector query") or [])
         if photo is not None and photo_index is not None:
-            ranking = _best_effort(lambda: photo_index.query(user_id, photo.data, photo.format), "Photo vector query")
-            rankings.append(ranking or [])
+            keys = _best_effort(lambda: photo_index.query(user_id, photo.data, photo.format), "Photo vector query")
+            # Only a wine's current photos count: a vector can outlive its photo if a delete's cleanup failed. A wine
+            # with several photos is ranked by its closest one.
+            photo_owner = {key: w.wine_id for w in wines.values() for key in w.photo_keys}
+            rankings.append(list(dict.fromkeys(photo_owner[k] for k in keys or [] if k in photo_owner)))
         # Vectors can outlive a wine if a delete's cleanup failed, so keep only wines that exist.
         rankings = [[wine_id for wine_id in r if wine_id in wines] for r in rankings]
         return [wines[wine_id] for wine_id in search.fuse(rankings)[:limit]]
@@ -278,6 +306,28 @@ def _decode_token(token: str) -> str:
         return str(ULID.from_str(base64.urlsafe_b64decode(token.encode()).decode()))
     except (binascii.Error, UnicodeDecodeError, ValueError) as e:
         raise InvalidPageTokenError("next_token is not valid; pass the next_token from the previous list_wines") from e
+
+
+def _check_room_for_photo(wine: Wine) -> None:
+    if len(wine.photo_keys) >= MAX_PHOTOS_PER_WINE:
+        raise InvalidPhotoError(
+            f"This wine already has {MAX_PHOTOS_PER_WINE} photos, the most it can have; delete one first."
+        )
+
+
+def _with_photo(wine: Wine, key: str) -> Wine:
+    if key in wine.photo_keys:
+        return wine
+    _check_room_for_photo(wine)
+    return wine.model_copy(update={"photo_keys": [*wine.photo_keys, key], "updated_at": datetime.now(UTC)})
+
+
+def _without_photo(wine: Wine, key: str) -> Wine:
+    if key not in wine.photo_keys:
+        return wine
+    return wine.model_copy(
+        update={"photo_keys": [k for k in wine.photo_keys if k != key], "updated_at": datetime.now(UTC)}
+    )
 
 
 def _required_name(name: str | None) -> str:

@@ -7,7 +7,9 @@ import base64
 import json
 from typing import Any, Literal
 
-from .models import Wine
+from botocore.exceptions import ClientError
+
+from .models import InvalidPhotoError, Wine
 
 EMBEDDING_MODEL_ID = "amazon.nova-2-multimodal-embeddings-v1:0"
 EMBEDDING_DIMENSION = 1024
@@ -26,14 +28,21 @@ class Embedder:
         return self._embed(purpose, text={"truncationMode": "END", "value": text})
 
     def embed_image(self, image: bytes, image_format: str, purpose: Purpose) -> list[float]:
-        return self._embed(
-            purpose,
-            image={
-                "format": image_format,
-                "detailLevel": "STANDARD_IMAGE",
-                "source": {"bytes": base64.b64encode(image).decode()},
-            },
-        )
+        """The image's embedding. InvalidPhotoError if Bedrock can't read it (e.g. a valid header over garbage)."""
+        try:
+            return self._embed(
+                purpose,
+                image={
+                    "format": image_format,
+                    "detailLevel": "STANDARD_IMAGE",
+                    "source": {"bytes": base64.b64encode(image).decode()},
+                },
+            )
+        except ClientError as e:
+            # Throttling and server errors are raised as they are, so the caller can retry.
+            if e.response.get("Error", {}).get("Code") == "ValidationException":
+                raise InvalidPhotoError("The photo couldn't be read as an image. Upload the photo itself.") from e
+            raise
 
     def _embed(self, purpose: Purpose, **content: dict[str, Any]) -> list[float]:
         body = {
@@ -118,14 +127,9 @@ class WinePhotoIndex:
             self._client.delete_vectors(**self._target, keys=photo_keys)
 
     def query(self, user_id: str, image: bytes, image_format: str, top_k: int = 10) -> list[str]:
-        """IDs of this user's wines with the most similar label photos, closest first, each wine once."""
+        """Keys of this user's label photos most similar to `image`, closest first."""
         vector = self._embedder.embed_image(image, image_format, "IMAGE_RETRIEVAL")
         resp = self._client.query_vectors(
-            **self._target,
-            topK=top_k,
-            queryVector={"float32": vector},
-            filter={"user_id": {"$eq": user_id}},
-            returnMetadata=True,
+            **self._target, topK=top_k, queryVector={"float32": vector}, filter={"user_id": {"$eq": user_id}}
         )
-        # A wine with several photos can match more than once; its closest photo sets its rank.
-        return list(dict.fromkeys(v["metadata"]["wine_id"] for v in resp.get("vectors", [])))
+        return [v["key"] for v in resp.get("vectors", [])]

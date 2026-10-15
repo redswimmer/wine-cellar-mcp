@@ -19,6 +19,7 @@ from ulid import ULID
 from .models import InvalidPhotoError, Upload
 
 MAX_PHOTO_BYTES = 5_000_000
+MAX_PHOTOS_PER_WINE = 10
 WINE_PREFIX = "wines/"
 SEARCH_PREFIX = "search/"
 UPLOAD_URL_SECONDS = 900  # how long the agent has to start the upload

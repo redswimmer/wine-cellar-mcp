@@ -69,17 +69,26 @@ Wine item attributes:
 
 Kept deliberately small; fields can be added when a real need comes up.
 
-- `name` (required): what the label says, as free text, e.g. "Ridge Monte
-  Bello Cabernet"
-- `varietal`: free text, e.g. "Cabernet Sauvignon" or "Grenache blend"
+- `name` (required): what the label says, as free text (up to 200
+  characters), e.g. "Ridge Monte Bello Cabernet"
+- `varietal`: free text (up to 200 characters), e.g. "Cabernet Sauvignon" or
+  "Grenache blend"
 - `verdict`: `love`, `like`, `meh`, `dislike`
-- `notes`: free text. The agent adds to it rather than replacing it, unless the
-  person asks to rewrite it.
-- `photo_keys`: S3 keys of label photos; each photo's id is the ULID at the end
-  of its key, which also gives when it was added
+- `notes`: free text (up to 20,000 characters). The agent adds to it rather
+  than replacing it, unless the person asks to rewrite it.
+- `photo_keys`: S3 keys of label photos, at most 10; each photo's id is the
+  ULID at the end of its key, which also gives when it was added
 - `search_text`: lowercased name and varietal, used for fuzzy matching
 - `created_at`, `updated_at` (UTC): when the wine was first recorded and last
   changed, so "the red I tried for the first time yesterday" is a date filter
+- `version`: how many times the item has been written. Every write is
+  conditional on the version it read (optimistic locking) and retries from a
+  fresh read if another write got there first, so an update and a photo
+  landing at the same moment can't undo each other, and a write can't bring
+  back a deleted wine.
+
+The text limits keep a wine far below DynamoDB's 400 KB item limit and keep
+fuzzy search fast (a search query is at most 500 characters).
 
 Text search loads the user's wines with one Query and fuzzy-matches in the
 Lambda. A personal list of a few hundred to a few thousand wines fits easily,
