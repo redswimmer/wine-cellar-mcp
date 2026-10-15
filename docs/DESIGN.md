@@ -28,7 +28,7 @@ answers is "have I had this wine, and did I like it?"
 | AgentCore Gateway | Not used for now | Needs an OAuth provider (Cognito) for inbound auth and adds cost for a single client. Can front the server later without code changes. |
 | Users | Every record is keyed by our own server-generated user ID (`usr_<ulid>`), never by a chat platform's ID or a username | IDs are generated and never change; each user also has a unique username for people to read and type. Keeps the server independent of any chat platform or agent. Each agent a user connects is configured with that user's token. |
 | Storage | DynamoDB on-demand, S3 for photos, S3 Vectors for embeddings | All pay-per-use and serverless. |
-| Label reading | Done by the agent, not the server | The agent's own model can read a label photo and pass the name, vintage and varietal as text, so the server needs no vision model. An agent whose model can't read images can still search by photo; it just can't fill in the fields. |
+| Label reading | Done by the agent, not the server | The agent's own model can read a label photo and pass the name and varietal as text, so the server needs no vision model. An agent whose model can't read images can still search by photo; it just can't fill in the fields. |
 | Embeddings | Amazon Nova Multimodal Embeddings on Bedrock (`amazon.nova-2-multimodal-embeddings-v1:0`), 1024 dimensions | One model for wine text and label photos. |
 | Search | Vector search plus the existing fuzzy match, merged by rank (reciprocal rank fusion) | The standard hybrid search pattern. S3 Vectors has no keyword search, so the merge runs in the Lambda. |
 | IaC | AWS CDK in Python | Same language as the service; deploys from GitHub Actions. |
@@ -71,14 +71,13 @@ Kept deliberately small; fields can be added when a real need comes up.
 
 - `name` (required): what the label says, as free text, e.g. "Ridge Monte
   Bello Cabernet"
-- `vintage`: the year on the label, or null for NV
 - `varietal`: free text, e.g. "Cabernet Sauvignon" or "Grenache blend"
 - `verdict`: `love`, `like`, `meh`, `dislike`
 - `notes`: free text. The agent adds to it rather than replacing it, unless the
   person asks to rewrite it.
 - `photo_keys`: S3 keys of label photos; each photo's id is the ULID at the end
   of its key, which also gives when it was added
-- `search_text`: lowercased name, vintage and varietal, used for fuzzy matching
+- `search_text`: lowercased name and varietal, used for fuzzy matching
 - `created_at`, `updated_at` (UTC): when the wine was first recorded and last
   changed, so "the red I tried for the first time yesterday" is a date filter
 
