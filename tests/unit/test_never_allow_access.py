@@ -2,7 +2,7 @@
 
 Two users, andrew (A) and sam (B), share one wired handler. A owns a wine with a label photo and an unused search
 photo. B then tries to reach A's data through every tool, and the tests check that B gets nothing of A's back and that
-A's wines, photos and vectors are unchanged. The vector store here ignores its user filter, so search isolation is
+A's wines, photos and vectors are unchanged. The search indexes here ignore the user on query, so search isolation is
 proven by the server rather than by S3 Vectors.
 
 """
@@ -24,23 +24,14 @@ from wine_cellar.server import build_app
 from wine_cellar.service import WineService
 from wine_cellar.tokens import TokenStore, hash_token
 from wine_cellar.users import UserStore
-from wine_cellar.vectors import Embedder, WinePhotoIndex, WineTextIndex
 
+from . import agent
 from .conftest import BUCKET, JPEG
-from .fakes import FakeS3Vectors
-from .test_entrypoint_handler import HOST, _client, _event, _ok, _rpc, _tool
+from .fakes import FakePhotoIndex, FakeTextIndex
 
 JPEG_TYPE = "image/jpeg"
 # In A's wine name and notes, and in no attempt's arguments, so any of A's wine content in a response is caught.
 A_MARKER = "zqxa"
-
-
-class LeakyS3Vectors(FakeS3Vectors):
-    """A vector store whose user filter is broken: every query returns every vector."""
-
-    def query_vectors(self, *, vectorBucketName, indexName, topK, queryVector, filter, returnMetadata=False):
-        hits = list(self.vectors.values())[:topK]
-        return {"vectors": [{"key": v["key"], **({"metadata": v["metadata"]} if returnMetadata else {})} for v in hits]}
 
 
 @dataclass
@@ -49,7 +40,7 @@ class World:
     service: WineService
     table: Any
     s3: Any
-    vectors: list[LeakyS3Vectors]
+    indexes: list[FakeTextIndex | FakePhotoIndex]
     tokens: dict[str, str]
     a_user: str
     b_user: str
@@ -66,10 +57,7 @@ class World:
         return {
             "items": sorted((i["sk"], i.get("doc", "")) for i in items if i["pk"] == user_pk(user_id)),
             "objects": sorted((o["Key"], o["ETag"]) for o in objects if f"/{user_id}/" in o["Key"]),
-            "vectors": [
-                sorted(k for k, v in index.vectors.items() if v["metadata"]["user_id"] == user_id)
-                for index in self.vectors
-            ],
+            "vectors": [index.keys_of(user_id) for index in self.indexes],
         }
 
     def a_secrets(self) -> list[str]:
@@ -79,7 +67,9 @@ class World:
 
 def _upload_photo(world_call, service, s3, wine_id: str, token: str | None = None) -> str:
     """What the agent and S3 do with an add_photo link: PUT the file, then the upload event records it."""
-    status, body = world_call(_tool("add_photo", {"wine_id": wine_id, "content_type": JPEG_TYPE}), token=token)
+    status, body = world_call(
+        agent.tool_call("add_photo", {"wine_id": wine_id, "content_type": JPEG_TYPE}), token=token
+    )
     key = body["result"]["structuredContent"]["fields"]["key"]
     s3.put_object(Bucket=BUCKET, Key=key, Body=JPEG, ContentType=JPEG_TYPE)
     service.photo_uploaded(key)
@@ -87,35 +77,29 @@ def _upload_photo(world_call, service, s3, wine_id: str, token: str | None = Non
 
 
 @pytest.fixture
-def world(table, s3, bedrock) -> World:
+def world(table, s3) -> World:
     users, tokens = UserStore(table), TokenStore(table)
     a, b = users.create("andrew"), users.create("sam")
     issued = {"andrew": tokens.create(a.user_id, "a-agent"), "sam": tokens.create(b.user_id, "b-agent")}
-    text_vectors, photo_vectors = LeakyS3Vectors(), LeakyS3Vectors()
-    embedder = Embedder(bedrock)
-    service = WineService(
-        WineRepository(table),
-        WineTextIndex(text_vectors, embedder, bucket="vb", index="wine-text"),
-        photos=PhotoStore(s3, BUCKET),
-        photo_index=WinePhotoIndex(photo_vectors, embedder, bucket="vb", index="wine-photos"),
-    )
-    call = _client(make_handler(*build_app(service, TokenStore(table).resolve, [HOST])), issued["andrew"])
+    text_index, photo_index = FakeTextIndex(leaky=True), FakePhotoIndex(leaky=True)
+    service = WineService(WineRepository(table), text_index, photos=PhotoStore(s3, BUCKET), photo_index=photo_index)
+    call = agent.client(make_handler(*build_app(service, TokenStore(table).resolve, [agent.HOST])), issued["andrew"])
 
-    a_wine = _ok(
+    a_wine = agent.ok(
         call, "create_wine", {"name": f"Ridge Monte Bello {A_MARKER}", "notes": f"huge, structured {A_MARKER}"}
     )["wine"]["wine_id"]
     a_photo_key = _upload_photo(call, service, s3, a_wine)
-    a_search_ref = _ok(call, "upload_search_photo", {"content_type": JPEG_TYPE})["photo_ref"]
+    a_search_ref = agent.ok(call, "upload_search_photo", {"content_type": JPEG_TYPE})["photo_ref"]
     s3.put_object(Bucket=BUCKET, Key=a_search_ref, Body=JPEG, ContentType=JPEG_TYPE)
     b_call = _as(call, issued["sam"])
-    b_wine = _ok(b_call, "create_wine", {"name": "Lopez de Heredia Tondonia"})["wine"]["wine_id"]
+    b_wine = agent.ok(b_call, "create_wine", {"name": "Lopez de Heredia Tondonia"})["wine"]["wine_id"]
     b_photo_key = _upload_photo(call, service, s3, b_wine, token=issued["sam"])
     return World(
         call=call,
         service=service,
         table=table,
         s3=s3,
-        vectors=[text_vectors, photo_vectors],
+        indexes=[text_index, photo_index],
         tokens=issued,
         a_user=a.user_id,
         b_user=b.user_id,
@@ -164,7 +148,7 @@ def test_one_user_never_reaches_another_users_wines_or_photos(world, attempt):
     tool, arguments = ATTEMPTS[attempt](world)
     before = world.snapshot(world.a_user)
 
-    status, body = world.call(_tool(tool, {**arguments, "user_id": world.a_user}), token=world.tokens["sam"])
+    status, body = world.call(agent.tool_call(tool, {**arguments, "user_id": world.a_user}), token=world.tokens["sam"])
 
     assert status == 200, body
     # An error may echo back an id B sent; anything else of A's in the response is a leak.
@@ -176,7 +160,7 @@ def test_one_user_never_reaches_another_users_wines_or_photos(world, attempt):
 
 def test_attempts_cover_every_tool(world):
     """Guard: a new tool fails here until it has a cross-user attempt above."""
-    _, body = world.call(_rpc("tools/list"))
+    _, body = world.call(agent.rpc("tools/list"))
     assert {t["name"] for t in body["result"]["tools"]} == {make(world)[0] for make in ATTEMPTS.values()}
 
 
@@ -184,7 +168,7 @@ def test_another_users_wine_looks_the_same_as_no_wine(world):
     """B can't tell whether a wine_id belongs to someone else: the error is the same as for an id nobody has."""
 
     def error(wine_id: str) -> str:
-        _, body = world.call(_tool("get_wine", {"wine_id": wine_id}), token=world.tokens["sam"])
+        _, body = world.call(agent.tool_call("get_wine", {"wine_id": wine_id}), token=world.tokens["sam"])
         return body["result"]["content"][0]["text"].replace(wine_id, "<id>")
 
     assert error(world.a_wine) == error(str(ULID()))
@@ -197,7 +181,7 @@ def test_a_wine_never_links_to_a_photo_outside_its_own_folder(world):
     assert b_wine is not None
     repo.put(b_wine.model_copy(update={"photo_keys": [*b_wine.photo_keys, world.a_photo_key]}))
 
-    body = json.dumps(_ok(_as(world.call, world.tokens["sam"]), "get_wine", {"wine_id": world.b_wine}))
+    body = json.dumps(agent.ok(_as(world.call, world.tokens["sam"]), "get_wine", {"wine_id": world.b_wine}))
 
     assert world.a_user not in body
     assert photo_id_of(world.b_photo_key) in body
@@ -205,17 +189,17 @@ def test_a_wine_never_links_to_a_photo_outside_its_own_folder(world):
 
 def test_search_with_a_broken_vector_filter_still_finds_the_wines_for_their_owner(world):
     """Makes sure the leak checks above aren't passing just because search returns nothing."""
-    names = [m["name"] for m in _ok(world.call, "search_wines", {"query": "huge structured red"})["matches"]]
+    names = [m["name"] for m in agent.ok(world.call, "search_wines", {"query": "huge structured red"})["matches"]]
     assert names == [f"Ridge Monte Bello {A_MARKER}"]
 
 
 def test_photo_search_never_matches_another_users_label(world):
     """B's photo search, with a broken vector filter, returns only B's wines."""
     b_call = _as(world.call, world.tokens["sam"])
-    ref = _ok(b_call, "upload_search_photo", {"content_type": JPEG_TYPE})["photo_ref"]
+    ref = agent.ok(b_call, "upload_search_photo", {"content_type": JPEG_TYPE})["photo_ref"]
     world.s3.put_object(Bucket=BUCKET, Key=ref, Body=JPEG, ContentType=JPEG_TYPE)
 
-    matches = _ok(b_call, "search_wines", {"photo_ref": ref})["matches"]
+    matches = agent.ok(b_call, "search_wines", {"photo_ref": ref})["matches"]
 
     assert [m["wine_id"] for m in matches] == [world.b_wine]
 
@@ -223,9 +207,9 @@ def test_photo_search_never_matches_another_users_label(world):
 def test_acting_as_another_user_by_name_creates_nothing_for_them(world):
     """create_wine with A's user_id records the wine for B, the token's user."""
     b_call = _as(world.call, world.tokens["sam"])
-    _ok(b_call, "create_wine", {"name": "Planted for A", "user_id": world.a_user})
-    assert "Planted for A" not in json.dumps(_ok(world.call, "list_wines", {}))
-    assert "Planted for A" in json.dumps(_ok(b_call, "list_wines", {}))
+    agent.ok(b_call, "create_wine", {"name": "Planted for A", "user_id": world.a_user})
+    assert "Planted for A" not in json.dumps(agent.ok(world.call, "list_wines", {}))
+    assert "Planted for A" in json.dumps(agent.ok(b_call, "list_wines", {}))
 
 
 @pytest.mark.parametrize(
@@ -245,7 +229,7 @@ def test_search_photo_refs_outside_the_callers_own_never_reach_s3(world, ref):
     s3_keys: list[str] = []
     world.s3.meta.events.register("before-parameter-build.s3", lambda params, **_: s3_keys.append(params.get("Key")))
 
-    status, body = world.call(_tool("search_wines", {"photo_ref": ref}), token=world.tokens["sam"])
+    status, body = world.call(agent.tool_call("search_wines", {"photo_ref": ref}), token=world.tokens["sam"])
 
     assert status == 200 and body["result"]["isError"] is True
     assert "upload again" in body["result"]["content"][0]["text"]
@@ -269,17 +253,17 @@ def test_an_upload_under_one_user_never_lands_on_another_users_wine(world, owner
 @pytest.mark.parametrize("method", ["GET", "DELETE"])
 def test_other_methods_never_skip_the_token_check(world, method):
     """API Gateway routes GET and DELETE /mcp to the same handler, and they need a token too."""
-    event = _event(_rpc("tools/list"), token="", host=HOST)
-    event["requestContext"]["http"]["method"] = method
-    handler = make_handler(*build_app(world.service, TokenStore(world.table).resolve, [HOST]))
-    assert handler(event, cast(Any, None))["statusCode"] == 401
+    request = agent.event(agent.rpc("tools/list"), token="", host=agent.HOST)
+    request["requestContext"]["http"]["method"] = method
+    handler = make_handler(*build_app(world.service, TokenStore(world.table).resolve, [agent.HOST]))
+    assert handler(request, cast(Any, None))["statusCode"] == 401
 
 
 def test_a_revoked_token_is_refused(world):
     """once revoked (and past the token cache), a token gets 401."""
     TokenStore(world.table).revoke(hash_token(world.tokens["sam"]))
-    fresh = _client(make_handler(*build_app(world.service, TokenStore(world.table).resolve, [HOST])), "")
-    assert fresh(_rpc("tools/list"), token=world.tokens["sam"])[0] == 401
+    fresh = agent.client(make_handler(*build_app(world.service, TokenStore(world.table).resolve, [agent.HOST])), "")
+    assert fresh(agent.rpc("tools/list"), token=world.tokens["sam"])[0] == 401
 
 
 def test_tokens_are_never_stored_or_logged(world, caplog):
@@ -287,8 +271,8 @@ def test_tokens_are_never_stored_or_logged(world, caplog):
     caplog.set_level(logging.DEBUG)
     responses = []
     for token in world.tokens.values():
-        responses.append(world.call(_tool("list_wines", {}), token=token))
-        responses.append(world.call(_tool("get_wine", {"wine_id": "nope"}), token=token))
+        responses.append(world.call(agent.tool_call("list_wines", {}), token=token))
+        responses.append(world.call(agent.tool_call("get_wine", {"wine_id": "nope"}), token=token))
 
     stored = json.dumps(world.table.scan()["Items"], default=str)
     for token in world.tokens.values():

@@ -1,7 +1,7 @@
-"""Shared fixtures: moto for DynamoDB and S3, in-memory fakes for Bedrock and S3 Vectors.
+"""Shared fixtures: moto for DynamoDB and S3, in-memory fakes of our search indexes.
 
-`service` is the fully wired WineService that most tests drive. Tests of a deliberately degraded setup (no photos,
-a failing index) build their own WineService from these fixtures.
+`service` is the fully wired WineService that most tests drive, and `call` drives it through the real MCP handler.
+Tests of a deliberately degraded setup (no photos, no index) build their own WineService from these fixtures.
 """
 
 import boto3
@@ -9,17 +9,21 @@ import pytest
 from botocore.config import Config
 from moto import mock_aws
 
+from wine_cellar.lambda_adapter import make_handler
 from wine_cellar.photos import PhotoStore
 from wine_cellar.repository import WineRepository
+from wine_cellar.server import build_app
 from wine_cellar.service import WineService
-from wine_cellar.vectors import Embedder, WinePhotoIndex, WineTextIndex
+from wine_cellar.tokens import TokenStore
+from wine_cellar.users import UserStore
 
-from .fakes import FakeBedrock, FakeS3Vectors
+from .fakes import FakePhotoIndex, FakeTextIndex
 
 TABLE = "wines-test"
 BUCKET = "photos-test"
 USER = "usr_1"
 JPEG = b"\xff\xd8\xff\xe0" + b"label" * 100
+PDF = b"%PDF-1.7"
 
 
 @pytest.fixture(autouse=True)
@@ -58,26 +62,34 @@ def s3(aws):
 
 
 @pytest.fixture
-def bedrock():
-    return FakeBedrock()
+def repo(table):
+    return WineRepository(table)
 
 
 @pytest.fixture
-def text_vectors():
-    return FakeS3Vectors()
+def text_index():
+    return FakeTextIndex()
 
 
 @pytest.fixture
-def photo_vectors():
-    return FakeS3Vectors()
+def photo_index():
+    return FakePhotoIndex()
 
 
 @pytest.fixture
-def service(table, s3, bedrock, text_vectors, photo_vectors):
-    embedder = Embedder(bedrock)
-    return WineService(
-        WineRepository(table),
-        WineTextIndex(text_vectors, embedder, bucket="vb", index="wine-text"),
-        photos=PhotoStore(s3, BUCKET),
-        photo_index=WinePhotoIndex(photo_vectors, embedder, bucket="vb", index="wine-photos"),
-    )
+def service(repo, s3, text_index, photo_index):
+    return WineService(repo, text_index, photos=PhotoStore(s3, BUCKET), photo_index=photo_index)
+
+
+@pytest.fixture
+def tokens(table):
+    users, store = UserStore(table), TokenStore(table)
+    return {name: store.create(users.create(name).user_id, f"{name}-agent") for name in ("andrew", "sam")}
+
+
+@pytest.fixture
+def call(service, table, tokens):
+    """Calls the MCP handler over the fully wired test service, as andrew unless another token is given."""
+    from .agent import HOST, client  # agent imports this module's constants
+
+    return client(make_handler(*build_app(service, TokenStore(table).resolve, [HOST])), tokens["andrew"])
