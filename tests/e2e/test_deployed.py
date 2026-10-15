@@ -116,31 +116,71 @@ async def upload_label(upload: dict) -> None:
     assert resp.status_code == 204, resp.text
 
 
-async def test_add_photo_then_download_and_search_by_photo(url, token):
+async def get_status(photo_url: str) -> int:
+    async with create_mcp_http_client() as http:
+        return (await http.get(photo_url)).status_code
+
+
+async def test_record_then_recall_by_label_photo(url, token):
+    """The main loop: at home, record a wine with its label photo; in the store, find it again by a photo of the label.
+
+    Then the cleanup an agent relies on: search photos are used once, and deleted photos are gone from S3. Those deletes
+    are best-effort and quiet on failure, so only checking what's left in the deployed bucket shows they work.
+    """
     async with session(url, token) as s:
         wine_id = (await call(s, "create_wine", TEST_WINE))["wine"]["wine_id"]
         try:
-            await upload_label(await call(s, "add_photo", {"wine_id": wine_id, "content_type": "image/jpeg"}))
 
-            async def saved() -> bool:
-                return bool((await call(s, "get_wine", {"wine_id": wine_id}))["wine"]["photos"])
+            async def photos() -> list[dict]:
+                return (await call(s, "get_wine", {"wine_id": wine_id}))["wine"]["photos"]
+
+            async def add_label(count: int) -> None:
+                # One at a time: the upload event saves each photo to the wine.
+                await upload_label(await call(s, "add_photo", {"wine_id": wine_id, "content_type": "image/jpeg"}))
+
+                async def saved() -> bool:
+                    return len(await photos()) == count
+
+                await eventually(saved, f"saving photo {count} to the wine")
+
+            await add_label(1)
+            await add_label(2)
+
+            async def search_photo() -> dict:
+                search = await call(s, "upload_search_photo", {"content_type": "image/jpeg"})
+                await upload_label(search)
+                return search
 
             async def found_by_photo() -> bool:
                 # The photo shows on the wine just before its vector is written, so search until it's found.
                 # Each search photo is used once, so every try uploads a fresh one.
-                search = await call(s, "upload_search_photo", {"content_type": "image/jpeg"})
-                await upload_label(search)
-                matches = (await call(s, "search_wines", {"photo_ref": search["photo_ref"]}))["matches"]
+                matches = (await call(s, "search_wines", {"photo_ref": (await search_photo())["photo_ref"]}))["matches"]
                 return bool(matches) and matches[0]["wine_id"] == wine_id
 
-            await eventually(saved, "saving the photo to the wine")
             await eventually(found_by_photo, "finding the wine by its photo")
-            (photo,) = (await call(s, "get_wine", {"wine_id": wine_id}))["wine"]["photos"]
+
+            # What an agent sends in the store: the photo plus the name read off the label. The verdict comes back.
+            ref = (await search_photo())["photo_ref"]
+            (best, *_) = (await call(s, "search_wines", {"photo_ref": ref, "query": NAME}))["matches"]
+            assert (best["wine_id"], best["verdict"]) == (wine_id, TEST_WINE["verdict"])
+
+            # The search photo was deleted after use, so its photo_ref doesn't work twice.
+            reused = await s.call_tool("search_wines", {"photo_ref": ref})
+            assert reused.is_error
+            assert "upload again" in "".join(getattr(c, "text", "") for c in reused.content)
+
+            first, second = await photos()
             async with create_mcp_http_client() as http:
-                download = await http.get(photo["url"])
+                download = await http.get(first["url"])
             assert (download.headers["content-type"], download.content) == ("image/jpeg", LABEL.read_bytes())
+
+            await call(s, "delete_photo", {"wine_id": wine_id, "photo_id": first["photo_id"]})
+            assert [p["photo_id"] for p in await photos()] == [second["photo_id"]]
+            # 404 with the function's list permission, 403 without; either way the file is gone.
+            assert await get_status(first["url"]) in (403, 404)
         finally:
             await call(s, "delete_wine", {"wine_id": wine_id})
+        assert await get_status(second["url"]) in (403, 404)
 
 
 async def test_unuploaded_photo_ref_is_a_clear_error(url, token):
