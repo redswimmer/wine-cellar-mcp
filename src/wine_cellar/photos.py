@@ -123,8 +123,7 @@ class PhotoStore:
         _check_size(head["ContentLength"])
         photo = sniff(self._s3.get_object(Bucket=self._bucket, Key=key)["Body"].read())
         declared, actual = head.get("ContentType", ""), f"image/{photo.format}"
-        # Photos uploaded before uploads declared a type have none (binary/octet-stream); only a wrong image type fails.
-        if declared.startswith("image/") and declared != actual:
+        if declared != actual:
             raise InvalidPhotoError(
                 f"The photo was uploaded as {declared} but is a {photo.format.upper()}. "
                 f"Get a new link with content_type {actual} and upload again."

@@ -136,8 +136,7 @@ download links serve them as images.
   upload's S3 event runs a second Lambda that checks the bytes are an image of
   the declared type, adds it to the wine's `photo_keys` and indexes it. A file
   that isn't the image type it declared, or one for a wine deleted meanwhile,
-  is discarded. Photos stored before uploads declared a type have none
-  (`binary/octet-stream`) and are still read.
+  is discarded.
 - **Searching with a photo**: `upload_search_photo` returns a link and a
   `photo_ref` under `search/<user_id>/`; the agent uploads, then passes
   `photo_ref` to `search_wines`. A missing, too large or non-image upload comes

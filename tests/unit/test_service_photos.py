@@ -94,14 +94,6 @@ def test_search_photo_of_the_wrong_type_says_which_type_to_use(service, s3):
         service.search_wines(USER, photo_ref=search_photo(service, s3, JPEG, image_type=ImageType.GIF))
 
 
-def test_photos_stored_before_uploads_had_a_type_still_read(service, s3, photo_vectors):
-    wine = service.create_wine(USER, name="Ridge")
-    key = add_photo(service, s3, wine.wine_id)
-    s3.put_object(Bucket=BUCKET, Key=key, Body=JPEG)  # as the old PUT links stored it: binary/octet-stream
-    photo_vectors.vectors.clear()
-    assert service.reindex(USER) == (1, 1)
-
-
 def test_delete_photo_removes_just_that_photo(service, s3, photo_vectors):
     wine = service.create_wine(USER, name="Ridge")
     keep = add_photo(service, s3, wine.wine_id)
