@@ -11,28 +11,28 @@ from .conftest import USER
 
 
 def test_create_then_update_only_the_given_fields(service):
-    wine = service.create_wine(USER, name=" Ridge Monte Bello ", vintage=2019, verdict=Verdict.LIKE, notes="Bold")
+    wine = service.create_wine(USER, name=" Ridge Monte Bello ", varietal="Cab", verdict=Verdict.LIKE, notes="Bold")
     assert wine.name == "Ridge Monte Bello"
 
     updated = service.update_wine(USER, wine.wine_id, verdict=Verdict.LOVE, notes="Bold\nEven better with food")
     assert updated.verdict == Verdict.LOVE
     assert updated.notes == "Bold\nEven better with food"
-    assert updated.vintage == 2019  # not cleared by an update that omitted it
+    assert updated.varietal == "Cab"  # not cleared by an update that omitted it
     assert updated.created_at == wine.created_at
     assert updated.updated_at > wine.updated_at
     assert service.get_wine(USER, wine.wine_id) == updated
 
 
 def test_update_empties_fields_sent_as_none(service):
-    wine = service.create_wine(USER, name="Ridge", vintage=2019, varietal="Zinfandel", verdict=Verdict.LIKE, notes="ok")
-    updated = service.update_wine(USER, wine.wine_id, vintage=None, verdict=None, notes=None, varietal="Cabernet")
-    assert (updated.vintage, updated.verdict, updated.notes, updated.varietal) == (None, None, "", "Cabernet")
+    wine = service.create_wine(USER, name="Ridge", varietal="Zinfandel", verdict=Verdict.LIKE, notes="ok")
+    updated = service.update_wine(USER, wine.wine_id, verdict=None, notes=None, varietal="Cabernet")
+    assert (updated.verdict, updated.notes, updated.varietal) == (None, "", "Cabernet")
     assert updated.name == "Ridge"
 
 
 def test_only_the_name_is_required(service):
     wine = service.create_wine(USER, name="Monte Bello")
-    assert (wine.vintage, wine.varietal, wine.verdict, wine.notes) == (None, "", None, "")
+    assert (wine.varietal, wine.verdict, wine.notes) == ("", None, "")
 
 
 @pytest.mark.parametrize("name", ["", "   "])
@@ -59,8 +59,8 @@ def test_users_are_isolated(service):
 
 
 def test_search_ranks_closest_match_first(service):
-    service.create_wine(USER, name="Ridge Monte Bello", vintage=2019)
-    service.create_wine(USER, name="Lopez de Heredia Viña Tondonia", vintage=2010)
+    service.create_wine(USER, name="Ridge Monte Bello")
+    service.create_wine(USER, name="Lopez de Heredia Viña Tondonia")
     results = service.search_wines(USER, "tondonia")
     assert results[0].name == "Lopez de Heredia Viña Tondonia"
     assert all(r.name != "Ridge Monte Bello" for r in results)

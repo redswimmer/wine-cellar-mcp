@@ -9,7 +9,7 @@ from .models import Wine
 
 
 def score(query: str, wine: Wine) -> float:
-    """0-100 similarity between free text and a wine's name, vintage and varietal."""
+    """0-100 similarity between free text and a wine's name and varietal."""
     text = wine.search_text
     return max(
         fuzz.token_set_ratio(query, text, processor=utils.default_process),

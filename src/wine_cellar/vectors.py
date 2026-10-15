@@ -51,8 +51,8 @@ class Embedder:
 
 
 def wine_text(wine: Wine) -> str:
-    """What a wine's text vector describes: the label plus everything the person said about it."""
-    lines = [wine.label]
+    """What a wine's text vector describes: the name plus everything the person said about it."""
+    lines = [wine.name]
     lines.extend(
         f"{label}: {value}"
         for label, value in [

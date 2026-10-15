@@ -127,15 +127,15 @@ def test_initialize_and_list_tools(call):
 
 
 def test_create_update_then_search_over_http(call):
-    wine_id = _ok(call, "create_wine", {"name": "Ridge Monte Bello", "vintage": 2019, "verdict": "like"})["wine"][
+    wine_id = _ok(call, "create_wine", {"name": "Ridge Monte Bello", "varietal": "Cab", "verdict": "like"})["wine"][
         "wine_id"
     ]
-    updated = _ok(call, "update_wine", {"wine_id": wine_id, "verdict": "love", "vintage": None})["wine"]
-    assert (updated["verdict"], updated["vintage"], updated["name"]) == ("love", None, "Ridge Monte Bello")
+    updated = _ok(call, "update_wine", {"wine_id": wine_id, "verdict": "love", "varietal": None})["wine"]
+    assert (updated["verdict"], updated["varietal"], updated["name"]) == ("love", "", "Ridge Monte Bello")
 
     matches = _ok(call, "search_wines", {"query": "monte bello"})["matches"]
     assert matches[0]["wine_id"] == wine_id
-    assert matches[0]["label"] == "Ridge Monte Bello"
+    assert matches[0]["name"] == "Ridge Monte Bello"
 
 
 def _key_of(url: str) -> str:

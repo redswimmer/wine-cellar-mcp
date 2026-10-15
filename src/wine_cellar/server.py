@@ -31,7 +31,7 @@ label photos.
 
 Recipes:
 - "Do I like this?" from a label photo: upload_search_photo, PUT the photo to upload_url, then search_wines with \
-photo_ref plus the name and vintage you read off the label. The closest wines come back even when none is this wine, \
+photo_ref plus the name you read off the label. The closest wines come back even when none is this wine, \
 so check before answering; if it isn't recorded, say so.
 - Photo with no readable label (a glass, a blurry or far-off bottle): don't guess the wine. Ask for a clear photo of \
 the bottle's label.
@@ -41,7 +41,7 @@ menu photo won't match label photos). Answer with the ones that really match and
 what you read off the label. If they sent a label photo, always add_photo and PUT it to upload_url, so the next photo \
 lookup finds it.
 - Add a note: update_wine with the existing notes plus the new part appended.
-- Change one thing (verdict, vintage, a label fix): update_wine with only that field.
+- Change one thing (verdict, varietal, a label fix): update_wine with only that field.
 - Show a wine's label photos: each photo has a url, a link to the image that works for an hour; get_wine again for a \
 fresh one.
 - Browse: list_wines filters by verdict, varietal and when a wine was first recorded or last changed; pass next_token \
@@ -50,7 +50,6 @@ back for more. For descriptions like "that bold red I loved", use search_wines.
 
 WineId = Annotated[str, Field(description="wine_id returned by another tool")]
 NAME_DESCRIPTION = "What the label says, e.g. 'Ridge Monte Bello Cabernet'"
-VINTAGE_DESCRIPTION = "Year on the label"
 VARIETAL_DESCRIPTION = "Grape or blend, e.g. 'Cabernet Sauvignon' or 'Grenache blend'"
 VERDICT_DESCRIPTION = "How the person feels about it"
 PhotoRef = Annotated[str | None, Field(description="photo_ref from upload_search_photo, once the photo is uploaded")]
@@ -123,7 +122,6 @@ def build_server(service: WineService) -> MCPServer:
             {"photo_id": p.photo_id, "added_at": p.added_at.isoformat(), "url": service.photo_url(key)}
             for key, p in zip(wine.photo_keys, wine.photos, strict=True)
         ]
-        data["label"] = wine.label
         return data
 
     @mcp.tool()
@@ -132,15 +130,12 @@ def build_server(service: WineService) -> MCPServer:
     def create_wine(
         ctx: Context,
         name: Annotated[str, Field(description=NAME_DESCRIPTION)],
-        vintage: Annotated[int | None, Field(description=VINTAGE_DESCRIPTION)] = None,
         varietal: Annotated[str, Field(description=VARIETAL_DESCRIPTION)] = "",
         verdict: Annotated[Verdict | None, Field(description=VERDICT_DESCRIPTION)] = None,
         notes: Annotated[str, Field(description="What the person said about it")] = "",
     ) -> dict[str, Any]:
         """Record a wine the person tried and what they thought of it. Only the name is required."""
-        wine = service.create_wine(
-            current_user(ctx), name=name, vintage=vintage, varietal=varietal, verdict=verdict, notes=notes
-        )
+        wine = service.create_wine(current_user(ctx), name=name, varietal=varietal, verdict=verdict, notes=notes)
         return {"wine": _summary(wine)}
 
     @mcp.tool(annotations=ToolAnnotations(idempotent_hint=True))
@@ -150,7 +145,6 @@ def build_server(service: WineService) -> MCPServer:
         ctx: Context,
         wine_id: WineId,
         name: Annotated[str, Field(default_factory=_unset, description=NAME_DESCRIPTION)],
-        vintage: Annotated[int | None, Field(default_factory=_unset, description=VINTAGE_DESCRIPTION)],
         varietal: Annotated[str | None, Field(default_factory=_unset, description=VARIETAL_DESCRIPTION)],
         verdict: Annotated[Verdict | None, Field(default_factory=_unset, description=VERDICT_DESCRIPTION)],
         notes: Annotated[
@@ -164,9 +158,9 @@ def build_server(service: WineService) -> MCPServer:
         """Change a recorded wine.
 
         A partial update: send only the fields that change, and every field left out keeps its value. Send null to
-        empty a field, e.g. vintage null when the person says it's non-vintage. The name can't be emptied.
+        empty a field, e.g. verdict null when the person is no longer sure. The name can't be emptied.
         """
-        fields = {"name": name, "vintage": vintage, "varietal": varietal, "verdict": verdict, "notes": notes}
+        fields = {"name": name, "varietal": varietal, "verdict": verdict, "notes": notes}
         wine = service.update_wine(current_user(ctx), wine_id, **{k: v for k, v in fields.items() if v is not UNSET})
         return {"wine": _summary(wine)}
 
