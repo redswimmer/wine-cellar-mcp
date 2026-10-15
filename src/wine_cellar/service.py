@@ -11,7 +11,7 @@ from typing import Any
 from ulid import ULID
 
 from . import search
-from .models import ImageType, InvalidPhotoError, Upload, Verdict, Wine, photo_id_of
+from .models import ImageType, InvalidPhotoError, PhotoInfo, Upload, Verdict, Wine, photo_id_of
 from .photos import PhotoStore, wine_photo_owner
 from .repository import WineRepository
 from .vectors import WinePhotoIndex, WineTextIndex
@@ -108,9 +108,18 @@ class WineService:
         self.get_wine(user_id, wine_id)
         return self._photo_store().create_wine_upload(user_id, wine_id, image_type)
 
-    def photo_url(self, key: str) -> str | None:
-        """A temporary link to download a wine's photo, or None when photos are off."""
-        return self._photos.download_url(key) if self._photos is not None else None
+    def photo_links(self, wine: Wine) -> list[tuple[PhotoInfo, str | None]]:
+        """A wine's photos, each with a temporary download link (None when photos are off).
+
+        Only photos in the wine's own folder are listed, whatever the record holds, so a link never reaches another
+        user's photo.
+        """
+        photos = self._photos
+        return [
+            (info, photos.download_url(key) if photos is not None else None)
+            for key, info in zip(wine.photo_keys, wine.photos, strict=True)
+            if wine_photo_owner(key) == (wine.user_id, wine.wine_id)
+        ]
 
     def upload_search_photo(self, user_id: str, image_type: ImageType) -> Upload:
         return self._photo_store().create_search_upload(user_id, image_type)

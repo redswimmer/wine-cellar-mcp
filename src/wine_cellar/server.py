@@ -120,8 +120,8 @@ def build_server(service: WineService) -> MCPServer:
     def _summary(wine: Wine) -> dict[str, Any]:
         data = wine.model_dump(mode="json", exclude={"user_id", "photo_keys"})
         data["photos"] = [
-            {"photo_id": p.photo_id, "added_at": p.added_at.isoformat(), "url": service.photo_url(key)}
-            for key, p in zip(wine.photo_keys, wine.photos, strict=True)
+            {"photo_id": p.photo_id, "added_at": p.added_at.isoformat(), "url": url}
+            for p, url in service.photo_links(wine)
         ]
         return data
 
