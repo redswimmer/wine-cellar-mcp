@@ -119,16 +119,23 @@ vectors.
 No tool takes a user ID. The bearer token identifies the user, so the user is
 fixed by the token the agent was configured with, not by anything it says.
 
-Photos never travel inside an MCP request. The agent PUTs the image to a
-pre-signed S3 URL (valid 15 minutes), e.g.
-`curl -sSf --upload-file label.jpg "<url>"`:
+Photos never travel inside an MCP request. The agent uploads the image with
+a pre-signed S3 POST (valid 15 minutes): `add_photo` and `upload_search_photo`
+take the photo's `content_type` (`image/jpeg`, `image/png`, `image/webp` or
+`image/gif`) and return `upload_url` plus form `fields`. The agent POSTs a
+multipart form with every field, then the file as the last field, named
+`file`, with any HTTP client (e.g.
+`curl -sSf -F key=... -F Content-Type=image/jpeg ... -F file=@label.jpg "<upload_url>"`).
+The POST policy makes S3 itself reject an upload of another Content-Type or
+over 5 MB, so photos are stored with their real image type in one request and
+download links serve them as images.
 
-- **Adding a photo to a wine** is one step: `add_photo(wine_id)` returns the
-  link, and uploading to it saves the photo to that wine. The upload's S3 event
-  runs a second Lambda that checks the image, adds it to the wine's
-  `photo_keys` and indexes it; the wine's `photo_count` goes up within a few
-  seconds. A file over 5 MB or that isn't a JPEG, PNG, WebP or GIF, or one for
-  a wine deleted meanwhile, is discarded.
+- **Adding a photo to a wine** is one step: `add_photo(wine_id, content_type)`
+  returns the link, and uploading to it saves the photo to that wine. The
+  upload's S3 event runs a second Lambda that checks the bytes are an image of
+  the declared type, adds it to the wine's `photo_keys` and indexes it. A file
+  that isn't the image type it declared, or one for a wine deleted meanwhile,
+  is discarded.
 - **Searching with a photo**: `upload_search_photo` returns a link and a
   `photo_ref` under `search/<user_id>/`; the agent uploads, then passes
   `photo_ref` to `search_wines`. A missing, too large or non-image upload comes

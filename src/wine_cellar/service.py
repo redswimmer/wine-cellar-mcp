@@ -11,7 +11,7 @@ from typing import Any
 from ulid import ULID
 
 from . import search
-from .models import InvalidPhotoError, Upload, Verdict, Wine, photo_id_of
+from .models import ImageType, InvalidPhotoError, Upload, Verdict, Wine, photo_id_of
 from .photos import PhotoStore, wine_photo_owner
 from .repository import WineRepository
 from .vectors import WinePhotoIndex, WineTextIndex
@@ -103,17 +103,17 @@ class WineService:
         self._save(updated)
         return updated
 
-    def add_photo(self, user_id: str, wine_id: str) -> Upload:
+    def add_photo(self, user_id: str, wine_id: str, image_type: ImageType) -> Upload:
         """An upload link that saves a photo to this wine. `photo_uploaded` finishes the job once the file lands."""
         self.get_wine(user_id, wine_id)
-        return self._photo_store().create_wine_upload(user_id, wine_id)
+        return self._photo_store().create_wine_upload(user_id, wine_id, image_type)
 
     def photo_url(self, key: str) -> str | None:
         """A temporary link to download a wine's photo, or None when photos are off."""
         return self._photos.download_url(key) if self._photos is not None else None
 
-    def upload_search_photo(self, user_id: str) -> Upload:
-        return self._photo_store().create_search_upload(user_id)
+    def upload_search_photo(self, user_id: str, image_type: ImageType) -> Upload:
+        return self._photo_store().create_search_upload(user_id, image_type)
 
     def _photo_store(self) -> PhotoStore:
         if self._photos is None:

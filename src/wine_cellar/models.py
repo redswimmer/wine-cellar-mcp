@@ -51,16 +51,26 @@ class Wine(BaseModel):
         return [PhotoInfo(photo_id_of(k), photo_added_at(k)) for k in self.photo_keys]
 
 
+class ImageType(StrEnum):
+    """The photo formats accepted, as the Content-Type an upload declares."""
+
+    JPEG = "image/jpeg"
+    PNG = "image/png"
+    WEBP = "image/webp"
+    GIF = "image/gif"
+
+
 class InvalidPhotoError(ValueError):
     """The photo can't be used; the message tells the agent what to do instead."""
 
 
 @dataclass(frozen=True)
 class Upload:
-    """A link the agent PUTs a photo to, and the limits that apply to it."""
+    """A pre-signed POST the agent uploads a photo with: the form fields to send with the file, and its limits."""
 
     photo_ref: str
     upload_url: str
+    fields: dict[str, str]
     max_bytes: int
     expires_in_seconds: int
 
