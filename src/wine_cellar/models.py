@@ -20,7 +20,6 @@ class Wine(BaseModel):
     wine_id: str
     user_id: str
     name: str = Field(description="What the label says, e.g. 'Ridge Monte Bello Cabernet'")
-    vintage: int | None = Field(default=None, description="Year on the label, or null for non-vintage")
     varietal: str = Field(default="", description="Grape or blend, e.g. 'Cabernet Sauvignon'")
     verdict: Verdict | None = None
     notes: str = ""
@@ -31,7 +30,10 @@ class Wine(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _from_old_fields(cls, data: Any) -> Any:
-        """Read wines stored before the model was simplified (producer + name, a varietals list)."""
+        """Read wines stored before the model was simplified (producer + name, a varietals list).
+
+        Unknown fields, such as a vintage stored before it was dropped, are ignored.
+        """
         if isinstance(data, dict) and "producer" in data:
             data = dict(data)
             data["name"] = " ".join(p for p in [data.pop("producer"), data.get("name", "")] if p)
@@ -41,16 +43,21 @@ class Wine(BaseModel):
 
     @property
     def search_text(self) -> str:
-        return " ".join(p for p in [self.name, str(self.vintage or ""), self.varietal] if p).lower()
-
-    @property
-    def label(self) -> str:
-        return " ".join(p for p in [self.name, str(self.vintage) if self.vintage else ""] if p)
+        return " ".join(p for p in [self.name, self.varietal] if p).lower()
 
     @property
     def photos(self) -> list["PhotoInfo"]:
         """The wine's photos as the agent sees them: an id and when it was added, not the storage key."""
         return [PhotoInfo(photo_id_of(k), photo_added_at(k)) for k in self.photo_keys]
+
+
+class ImageType(StrEnum):
+    """The photo formats accepted, as the Content-Type an upload declares."""
+
+    JPEG = "image/jpeg"
+    PNG = "image/png"
+    WEBP = "image/webp"
+    GIF = "image/gif"
 
 
 class InvalidPhotoError(ValueError):
@@ -59,10 +66,11 @@ class InvalidPhotoError(ValueError):
 
 @dataclass(frozen=True)
 class Upload:
-    """A link the agent PUTs a photo to, and the limits that apply to it."""
+    """A pre-signed POST the agent uploads a photo with: the form fields to send with the file, and its limits."""
 
     photo_ref: str
     upload_url: str
+    fields: dict[str, str]
     max_bytes: int
     expires_in_seconds: int
 

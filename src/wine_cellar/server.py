@@ -15,7 +15,7 @@ from pydantic import Field
 from starlette.types import ASGIApp
 
 from .auth import USER_ID_STATE_KEY, BearerAuthMiddleware
-from .models import InvalidPhotoError, Upload, Verdict, Wine
+from .models import ImageType, InvalidPhotoError, Upload, Verdict, Wine
 from .service import (
     InvalidPageTokenError,
     InvalidWineError,
@@ -30,18 +30,18 @@ Remembers wines the person has tried and what they thought of them: a verdict (l
 label photos.
 
 Recipes:
-- "Do I like this?" from a label photo: upload_search_photo, PUT the photo to upload_url, then search_wines with \
-photo_ref plus the name and vintage you read off the label. The closest wines come back even when none is this wine, \
+- "Do I like this?" from a label photo: upload_search_photo, upload the photo to its link, then search_wines with \
+photo_ref plus the name you read off the label. The closest wines come back even when none is this wine, \
 so check before answering; if it isn't recorded, say so.
 - Photo with no readable label (a glass, a blurry or far-off bottle): don't guess the wine. Ask for a clear photo of \
 the bottle's label.
 - Wine list, menu or shelf with several wines: read each name off it and search_wines with that text (no photo_ref; a \
 menu photo won't match label photos). Answer with the ones that really match and their verdicts.
 - Add a wine (from a photo or a name): search_wines first. If it's recorded, update_wine; otherwise create_wine with \
-what you read off the label. If they sent a label photo, always add_photo and PUT it to upload_url, so the next photo \
-lookup finds it.
+what you read off the label. If they sent a label photo, always add_photo and upload it to its link, so the next \
+photo lookup finds it.
 - Add a note: update_wine with the existing notes plus the new part appended.
-- Change one thing (verdict, vintage, a label fix): update_wine with only that field.
+- Change one thing (verdict, varietal, a label fix): update_wine with only that field.
 - Show a wine's label photos: each photo has a url, a link to the image that works for an hour; get_wine again for a \
 fresh one.
 - Browse: list_wines filters by verdict, varietal and when a wine was first recorded or last changed; pass next_token \
@@ -50,9 +50,9 @@ back for more. For descriptions like "that bold red I loved", use search_wines.
 
 WineId = Annotated[str, Field(description="wine_id returned by another tool")]
 NAME_DESCRIPTION = "What the label says, e.g. 'Ridge Monte Bello Cabernet'"
-VINTAGE_DESCRIPTION = "Year on the label"
 VARIETAL_DESCRIPTION = "Grape or blend, e.g. 'Cabernet Sauvignon' or 'Grenache blend'"
 VERDICT_DESCRIPTION = "How the person feels about it"
+ImageTypeArg = Annotated[ImageType, Field(description="The photo's type; the upload must be this type")]
 PhotoRef = Annotated[str | None, Field(description="photo_ref from upload_search_photo, once the photo is uploaded")]
 # Mistakes the agent can fix (unknown wine, no name, bad or missing upload, photos off) come back as tool errors.
 AGENT_ERRORS = (
@@ -123,7 +123,6 @@ def build_server(service: WineService) -> MCPServer:
             {"photo_id": p.photo_id, "added_at": p.added_at.isoformat(), "url": url}
             for p, url in service.photo_links(wine)
         ]
-        data["label"] = wine.label
         return data
 
     @mcp.tool()
@@ -132,15 +131,12 @@ def build_server(service: WineService) -> MCPServer:
     def create_wine(
         ctx: Context,
         name: Annotated[str, Field(description=NAME_DESCRIPTION)],
-        vintage: Annotated[int | None, Field(description=VINTAGE_DESCRIPTION)] = None,
         varietal: Annotated[str, Field(description=VARIETAL_DESCRIPTION)] = "",
         verdict: Annotated[Verdict | None, Field(description=VERDICT_DESCRIPTION)] = None,
         notes: Annotated[str, Field(description="What the person said about it")] = "",
     ) -> dict[str, Any]:
         """Record a wine the person tried and what they thought of it. Only the name is required."""
-        wine = service.create_wine(
-            current_user(ctx), name=name, vintage=vintage, varietal=varietal, verdict=verdict, notes=notes
-        )
+        wine = service.create_wine(current_user(ctx), name=name, varietal=varietal, verdict=verdict, notes=notes)
         return {"wine": _summary(wine)}
 
     @mcp.tool(annotations=ToolAnnotations(idempotent_hint=True))
@@ -150,7 +146,6 @@ def build_server(service: WineService) -> MCPServer:
         ctx: Context,
         wine_id: WineId,
         name: Annotated[str, Field(default_factory=_unset, description=NAME_DESCRIPTION)],
-        vintage: Annotated[int | None, Field(default_factory=_unset, description=VINTAGE_DESCRIPTION)],
         varietal: Annotated[str | None, Field(default_factory=_unset, description=VARIETAL_DESCRIPTION)],
         verdict: Annotated[Verdict | None, Field(default_factory=_unset, description=VERDICT_DESCRIPTION)],
         notes: Annotated[
@@ -164,16 +159,16 @@ def build_server(service: WineService) -> MCPServer:
         """Change a recorded wine.
 
         A partial update: send only the fields that change, and every field left out keeps its value. Send null to
-        empty a field, e.g. vintage null when the person says it's non-vintage. The name can't be emptied.
+        empty a field, e.g. verdict null when the person is no longer sure. The name can't be emptied.
         """
-        fields = {"name": name, "vintage": vintage, "varietal": varietal, "verdict": verdict, "notes": notes}
+        fields = {"name": name, "varietal": varietal, "verdict": verdict, "notes": notes}
         wine = service.update_wine(current_user(ctx), wine_id, **{k: v for k, v in fields.items() if v is not UNSET})
         return {"wine": _summary(wine)}
 
     def _upload(upload: Upload) -> dict[str, Any]:
         return {
             "upload_url": upload.upload_url,
-            "method": "PUT",
+            "fields": upload.fields,
             "max_bytes": upload.max_bytes,
             "expires_in_seconds": upload.expires_in_seconds,
         }
@@ -181,14 +176,14 @@ def build_server(service: WineService) -> MCPServer:
     @mcp.tool()
     @_traced
     @_agent_errors
-    def add_photo(ctx: Context, wine_id: WineId) -> dict[str, Any]:
-        """Add a label photo to a wine: returns a link, and the photo is saved to the wine once uploaded to it.
+    def add_photo(ctx: Context, wine_id: WineId, content_type: ImageTypeArg) -> dict[str, Any]:
+        """Add a label photo to a wine: returns an upload link, and the photo is saved to the wine once uploaded.
 
-        PUT the image file to upload_url (for example `curl -sSf --upload-file label.jpg "<upload_url>"`). JPEG, PNG,
-        WebP or GIF up to max_bytes; anything else is discarded. The photo shows in the wine's photos within a few
-        seconds.
+        Upload with an HTTP POST to upload_url as a multipart form: every entry in fields, then the image as the last
+        field, named file (for example `curl -sSf -F key=... -F Content-Type=image/jpeg ... -F file=@label.jpg
+        "<upload_url>"`). Up to max_bytes. The photo shows in the wine's photos within a few seconds.
         """
-        return _upload(service.add_photo(current_user(ctx), wine_id))
+        return _upload(service.add_photo(current_user(ctx), wine_id, content_type))
 
     @mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
     @_traced
@@ -205,13 +200,13 @@ def build_server(service: WineService) -> MCPServer:
     @mcp.tool()
     @_traced
     @_agent_errors
-    def upload_search_photo(ctx: Context) -> dict[str, Any]:
+    def upload_search_photo(ctx: Context, content_type: ImageTypeArg) -> dict[str, Any]:
         """Get a link for uploading a photo to search with. The photo is used for one search and never saved.
 
-        PUT the image file to upload_url (for example `curl -sSf --upload-file label.jpg "<upload_url>"`). JPEG, PNG,
-        WebP or GIF up to max_bytes.
+        Upload with an HTTP POST to upload_url as a multipart form: every entry in fields, then the image as the last
+        field, named file. Up to max_bytes.
         """
-        upload = service.upload_search_photo(current_user(ctx))
+        upload = service.upload_search_photo(current_user(ctx), content_type)
         return {"photo_ref": upload.photo_ref, **_upload(upload)}
 
     @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))

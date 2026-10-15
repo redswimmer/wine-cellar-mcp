@@ -28,7 +28,7 @@ answers is "have I had this wine, and did I like it?"
 | AgentCore Gateway | Not used for now | Needs an OAuth provider (Cognito) for inbound auth and adds cost for a single client. Can front the server later without code changes. |
 | Users | Every record is keyed by our own server-generated user ID (`usr_<ulid>`), never by a chat platform's ID or a username | IDs are generated and never change; each user also has a unique username for people to read and type. Keeps the server independent of any chat platform or agent. Each agent a user connects is configured with that user's token. |
 | Storage | DynamoDB on-demand, S3 for photos, S3 Vectors for embeddings | All pay-per-use and serverless. |
-| Label reading | Done by the agent, not the server | The agent's own model can read a label photo and pass the name, vintage and varietal as text, so the server needs no vision model. An agent whose model can't read images can still search by photo; it just can't fill in the fields. |
+| Label reading | Done by the agent, not the server | The agent's own model can read a label photo and pass the name and varietal as text, so the server needs no vision model. An agent whose model can't read images can still search by photo; it just can't fill in the fields. |
 | Embeddings | Amazon Nova Multimodal Embeddings on Bedrock (`amazon.nova-2-multimodal-embeddings-v1:0`), 1024 dimensions | One model for wine text and label photos. |
 | Search | Vector search plus the existing fuzzy match, merged by rank (reciprocal rank fusion) | The standard hybrid search pattern. S3 Vectors has no keyword search, so the merge runs in the Lambda. |
 | IaC | AWS CDK in Python | Same language as the service; deploys from GitHub Actions. |
@@ -71,14 +71,13 @@ Kept deliberately small; fields can be added when a real need comes up.
 
 - `name` (required): what the label says, as free text, e.g. "Ridge Monte
   Bello Cabernet"
-- `vintage`: the year on the label, or null for NV
 - `varietal`: free text, e.g. "Cabernet Sauvignon" or "Grenache blend"
 - `verdict`: `love`, `like`, `meh`, `dislike`
 - `notes`: free text. The agent adds to it rather than replacing it, unless the
   person asks to rewrite it.
 - `photo_keys`: S3 keys of label photos; each photo's id is the ULID at the end
   of its key, which also gives when it was added
-- `search_text`: lowercased name, vintage and varietal, used for fuzzy matching
+- `search_text`: lowercased name and varietal, used for fuzzy matching
 - `created_at`, `updated_at` (UTC): when the wine was first recorded and last
   changed, so "the red I tried for the first time yesterday" is a date filter
 
@@ -120,16 +119,23 @@ vectors.
 No tool takes a user ID. The bearer token identifies the user, so the user is
 fixed by the token the agent was configured with, not by anything it says.
 
-Photos never travel inside an MCP request. The agent PUTs the image to a
-pre-signed S3 URL (valid 15 minutes), e.g.
-`curl -sSf --upload-file label.jpg "<url>"`:
+Photos never travel inside an MCP request. The agent uploads the image with
+a pre-signed S3 POST (valid 15 minutes): `add_photo` and `upload_search_photo`
+take the photo's `content_type` (`image/jpeg`, `image/png`, `image/webp` or
+`image/gif`) and return `upload_url` plus form `fields`. The agent POSTs a
+multipart form with every field, then the file as the last field, named
+`file`, with any HTTP client (e.g.
+`curl -sSf -F key=... -F Content-Type=image/jpeg ... -F file=@label.jpg "<upload_url>"`).
+The POST policy makes S3 itself reject an upload of another Content-Type or
+over 5 MB, so photos are stored with their real image type in one request and
+download links serve them as images.
 
-- **Adding a photo to a wine** is one step: `add_photo(wine_id)` returns the
-  link, and uploading to it saves the photo to that wine. The upload's S3 event
-  runs a second Lambda that checks the image, adds it to the wine's
-  `photo_keys` and indexes it; the wine's `photo_count` goes up within a few
-  seconds. A file over 5 MB or that isn't a JPEG, PNG, WebP or GIF, or one for
-  a wine deleted meanwhile, is discarded.
+- **Adding a photo to a wine** is one step: `add_photo(wine_id, content_type)`
+  returns the link, and uploading to it saves the photo to that wine. The
+  upload's S3 event runs a second Lambda that checks the bytes are an image of
+  the declared type, adds it to the wine's `photo_keys` and indexes it. A file
+  that isn't the image type it declared, or one for a wine deleted meanwhile,
+  is discarded.
 - **Searching with a photo**: `upload_search_photo` returns a link and a
   `photo_ref` under `search/<user_id>/`; the agent uploads, then passes
   `photo_ref` to `search_wines`. A missing, too large or non-image upload comes

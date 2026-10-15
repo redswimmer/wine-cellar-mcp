@@ -28,8 +28,9 @@ from wine_cellar.vectors import Embedder, WinePhotoIndex, WineTextIndex
 
 from .conftest import BUCKET, JPEG
 from .fakes import FakeS3Vectors
-from .test_entrypoint_handler import HOST, _client, _event, _key_of, _ok, _rpc, _tool
+from .test_entrypoint_handler import HOST, _client, _event, _ok, _rpc, _tool
 
+JPEG_TYPE = "image/jpeg"
 # In A's wine name and notes, and in no attempt's arguments, so any of A's wine content in a response is caught.
 A_MARKER = "zqxa"
 
@@ -78,9 +79,9 @@ class World:
 
 def _upload_photo(world_call, service, s3, wine_id: str, token: str | None = None) -> str:
     """What the agent and S3 do with an add_photo link: PUT the file, then the upload event records it."""
-    status, body = world_call(_tool("add_photo", {"wine_id": wine_id}), token=token)
-    key = _key_of(body["result"]["structuredContent"]["upload_url"])
-    s3.put_object(Bucket=BUCKET, Key=key, Body=JPEG)
+    status, body = world_call(_tool("add_photo", {"wine_id": wine_id, "content_type": JPEG_TYPE}), token=token)
+    key = body["result"]["structuredContent"]["fields"]["key"]
+    s3.put_object(Bucket=BUCKET, Key=key, Body=JPEG, ContentType=JPEG_TYPE)
     service.photo_uploaded(key)
     return key
 
@@ -104,8 +105,8 @@ def world(table, s3, bedrock) -> World:
         call, "create_wine", {"name": f"Ridge Monte Bello {A_MARKER}", "notes": f"huge, structured {A_MARKER}"}
     )["wine"]["wine_id"]
     a_photo_key = _upload_photo(call, service, s3, a_wine)
-    a_search_ref = _ok(call, "upload_search_photo", {})["photo_ref"]
-    s3.put_object(Bucket=BUCKET, Key=a_search_ref, Body=JPEG)
+    a_search_ref = _ok(call, "upload_search_photo", {"content_type": JPEG_TYPE})["photo_ref"]
+    s3.put_object(Bucket=BUCKET, Key=a_search_ref, Body=JPEG, ContentType=JPEG_TYPE)
     b_call = _as(call, issued["sam"])
     b_wine = _ok(b_call, "create_wine", {"name": "Lopez de Heredia Tondonia"})["wine"]["wine_id"]
     b_photo_key = _upload_photo(call, service, s3, b_wine, token=issued["sam"])
@@ -145,7 +146,7 @@ ATTEMPTS: dict[str, Any] = {
     "slip A's photo key onto B's wine": lambda w: ("update_wine", {"wine_id": w.b_wine, "photo_keys": [w.a_photo_key]}),
     "delete A's wine": lambda w: ("delete_wine", {"wine_id": w.a_wine}),
     "delete B's own wine": lambda w: ("delete_wine", {"wine_id": w.b_wine}),
-    "add a photo to A's wine": lambda w: ("add_photo", {"wine_id": w.a_wine}),
+    "add a photo to A's wine": lambda w: ("add_photo", {"wine_id": w.a_wine, "content_type": JPEG_TYPE}),
     "delete A's photo": lambda w: ("delete_photo", {"wine_id": w.a_wine, "photo_id": photo_id_of(w.a_photo_key)}),
     "delete A's photo via B's wine": lambda w: (
         "delete_photo",
@@ -153,7 +154,7 @@ ATTEMPTS: dict[str, Any] = {
     ),
     "delete B's own photo": lambda w: ("delete_photo", {"wine_id": w.b_wine, "photo_id": photo_id_of(w.b_photo_key)}),
     "create a wine with A's wine_id": lambda w: ("create_wine", {"name": "Planted", "wine_id": w.a_wine}),
-    "get a search upload link": lambda w: ("upload_search_photo", {}),
+    "get a search upload link": lambda w: ("upload_search_photo", {"content_type": JPEG_TYPE}),
 }
 
 
@@ -211,8 +212,8 @@ def test_search_with_a_broken_vector_filter_still_finds_the_wines_for_their_owne
 def test_photo_search_never_matches_another_users_label(world):
     """B's photo search, with a broken vector filter, returns only B's wines."""
     b_call = _as(world.call, world.tokens["sam"])
-    ref = _ok(b_call, "upload_search_photo", {})["photo_ref"]
-    world.s3.put_object(Bucket=BUCKET, Key=ref, Body=JPEG)
+    ref = _ok(b_call, "upload_search_photo", {"content_type": JPEG_TYPE})["photo_ref"]
+    world.s3.put_object(Bucket=BUCKET, Key=ref, Body=JPEG, ContentType=JPEG_TYPE)
 
     matches = _ok(b_call, "search_wines", {"photo_ref": ref})["matches"]
 
@@ -257,7 +258,7 @@ def test_an_upload_under_one_user_never_lands_on_another_users_wine(world, owner
     user, wine = (world.a_user, world.b_wine) if owner == "a" else (world.b_user, world.a_wine)
     key = f"wines/{user}/{wine}/{ULID()}"
     before = (world.snapshot(world.a_user), world.snapshot(world.b_user))
-    world.s3.put_object(Bucket=BUCKET, Key=key, Body=JPEG)
+    world.s3.put_object(Bucket=BUCKET, Key=key, Body=JPEG, ContentType=JPEG_TYPE)
 
     world.service.photo_uploaded(key)
 

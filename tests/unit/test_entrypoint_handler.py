@@ -127,15 +127,15 @@ def test_initialize_and_list_tools(call):
 
 
 def test_create_update_then_search_over_http(call):
-    wine_id = _ok(call, "create_wine", {"name": "Ridge Monte Bello", "vintage": 2019, "verdict": "like"})["wine"][
+    wine_id = _ok(call, "create_wine", {"name": "Ridge Monte Bello", "varietal": "Cab", "verdict": "like"})["wine"][
         "wine_id"
     ]
-    updated = _ok(call, "update_wine", {"wine_id": wine_id, "verdict": "love", "vintage": None})["wine"]
-    assert (updated["verdict"], updated["vintage"], updated["name"]) == ("love", None, "Ridge Monte Bello")
+    updated = _ok(call, "update_wine", {"wine_id": wine_id, "verdict": "love", "varietal": None})["wine"]
+    assert (updated["verdict"], updated["varietal"], updated["name"]) == ("love", "", "Ridge Monte Bello")
 
     matches = _ok(call, "search_wines", {"query": "monte bello"})["matches"]
     assert matches[0]["wine_id"] == wine_id
-    assert matches[0]["label"] == "Ridge Monte Bello"
+    assert matches[0]["name"] == "Ridge Monte Bello"
 
 
 def _key_of(url: str) -> str:
@@ -146,11 +146,12 @@ def test_wine_photos_are_listed_with_download_links_and_can_be_deleted(call, ser
     wine_id = _ok(call, "create_wine", {"name": "Ridge"})["wine"]["wine_id"]
     keys = []
     for _ in range(2):
-        upload = _ok(call, "add_photo", {"wine_id": wine_id})
-        assert (upload["method"], upload["max_bytes"]) == ("PUT", MAX_PHOTO_BYTES)
-        # What happens after the agent PUTs to the link: the file lands at the link's key and the S3 event records it.
-        keys.append(_key_of(upload["upload_url"]))
-        s3.put_object(Bucket=BUCKET, Key=keys[-1], Body=JPEG)
+        upload = _ok(call, "add_photo", {"wine_id": wine_id, "content_type": "image/jpeg"})
+        assert (upload["upload_url"], upload["max_bytes"]) == (f"https://{BUCKET}.s3.amazonaws.com/", MAX_PHOTO_BYTES)
+        # What happens after the agent POSTs the form: the file lands at the form's key, typed as the form says, and
+        # the S3 event records it.
+        keys.append(upload["fields"]["key"])
+        s3.put_object(Bucket=BUCKET, Key=keys[-1], Body=JPEG, ContentType=upload["fields"]["Content-Type"])
         service.photo_uploaded(keys[-1])
 
     photos = _ok(call, "get_wine", {"wine_id": wine_id})["wine"]["photos"]
@@ -169,9 +170,20 @@ def test_wine_photos_are_listed_with_download_links_and_can_be_deleted(call, ser
 
 
 def test_upload_search_photo_returns_a_link(call):
-    upload = _ok(call, "upload_search_photo", {})
-    assert (upload["method"], upload["max_bytes"]) == ("PUT", MAX_PHOTO_BYTES)
+    upload = _ok(call, "upload_search_photo", {"content_type": "image/png"})
+    assert upload["max_bytes"] == MAX_PHOTO_BYTES
     assert upload["photo_ref"].startswith("search/")
+    assert (upload["fields"]["key"], upload["fields"]["Content-Type"]) == (upload["photo_ref"], "image/png")
+
+
+def test_photo_uploads_only_take_image_types(call):
+    _, body = call(_rpc("tools/list"))
+    tools = {t["name"]: t for t in body["result"]["tools"]}
+    for name in ("add_photo", "upload_search_photo"):
+        assert "content_type" in tools[name]["inputSchema"]["required"]
+    status, body = call(_tool("upload_search_photo", {"content_type": "image/svg+xml"}))
+    assert status == 200
+    assert body["result"]["isError"] is True
 
 
 def test_tool_annotations_reach_the_client(call):
@@ -211,7 +223,7 @@ def test_deactivated_user_is_rejected(table, tokens):
         ("get_wine", {"wine_id": "nope"}, "No wine"),
         ("update_wine", {"wine_id": "nope", "notes": "x"}, "No wine"),
         ("delete_wine", {"wine_id": "nope"}, "No wine"),
-        ("add_photo", {"wine_id": "nope"}, "No wine"),
+        ("add_photo", {"wine_id": "nope", "content_type": "image/jpeg"}, "No wine"),
         ("delete_photo", {"wine_id": "nope", "photo_id": "p"}, "No wine"),
         ("search_wines", {}, "photo_ref"),
         ("search_wines", {"photo_ref": "search/usr_other/01J"}, "upload again"),
@@ -226,7 +238,7 @@ def test_agent_mistakes_are_tool_errors(call, tool, arguments, message):
 
 
 def test_photos_are_off_without_a_vector_bucket(table, tokens):
-    status, body = _bootstrapped(table, tokens["andrew"])(_tool("upload_search_photo", {}))
+    status, body = _bootstrapped(table, tokens["andrew"])(_tool("upload_search_photo", {"content_type": "image/jpeg"}))
     assert status == 200
     assert body["result"]["isError"] is True
     assert "enabled" in body["result"]["content"][0]["text"]

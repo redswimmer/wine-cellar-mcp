@@ -11,7 +11,7 @@ from typing import Any
 from ulid import ULID
 
 from . import search
-from .models import InvalidPhotoError, PhotoInfo, Upload, Verdict, Wine, photo_id_of
+from .models import ImageType, InvalidPhotoError, PhotoInfo, Upload, Verdict, Wine, photo_id_of
 from .photos import PhotoStore, wine_photo_owner
 from .repository import WineRepository
 from .vectors import WinePhotoIndex, WineTextIndex
@@ -78,7 +78,6 @@ class WineService:
         user_id: str,
         *,
         name: str,
-        vintage: int | None = None,
         varietal: str = "",
         verdict: Verdict | None = None,
         notes: str = "",
@@ -87,7 +86,6 @@ class WineService:
             wine_id=str(ULID()),
             user_id=user_id,
             name=_required_name(name),
-            vintage=vintage,
             varietal=varietal.strip(),
             verdict=verdict,
             notes=notes.strip(),
@@ -105,10 +103,10 @@ class WineService:
         self._save(updated)
         return updated
 
-    def add_photo(self, user_id: str, wine_id: str) -> Upload:
+    def add_photo(self, user_id: str, wine_id: str, image_type: ImageType) -> Upload:
         """An upload link that saves a photo to this wine. `photo_uploaded` finishes the job once the file lands."""
         self.get_wine(user_id, wine_id)
-        return self._photo_store().create_wine_upload(user_id, wine_id)
+        return self._photo_store().create_wine_upload(user_id, wine_id, image_type)
 
     def photo_links(self, wine: Wine) -> list[tuple[PhotoInfo, str | None]]:
         """A wine's photos, each with a temporary download link (None when photos are off).
@@ -123,8 +121,8 @@ class WineService:
             if wine_photo_owner(key) == (wine.user_id, wine.wine_id)
         ]
 
-    def upload_search_photo(self, user_id: str) -> Upload:
-        return self._photo_store().create_search_upload(user_id)
+    def upload_search_photo(self, user_id: str, image_type: ImageType) -> Upload:
+        return self._photo_store().create_search_upload(user_id, image_type)
 
     def _photo_store(self) -> PhotoStore:
         if self._photos is None:

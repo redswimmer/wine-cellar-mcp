@@ -24,7 +24,7 @@ EXPECTED_TOOLS = {
     "delete_wine",
 }
 LABEL = Path(__file__).with_name("label.jpg")
-TEST_WINE = {"name": NAME, "vintage": 2020, "verdict": "like"}
+TEST_WINE = {"name": NAME, "verdict": "like"}
 INITIALIZE = {
     "jsonrpc": "2.0",
     "id": 1,
@@ -76,7 +76,7 @@ async def test_create_update_search_delete_round_trip(url, token):
 
 
 async def test_search_by_notes_uses_the_text_vectors(url, token):
-    # Name matching only reads the name, vintage and varietal, so only the text vectors can find a phrase in the notes.
+    # Name matching only reads the name and varietal, so only the text vectors can find a phrase in the notes.
     notes = "Smoked cherries and pipe tobacco, served at the lake house"
     async with session(url, token) as s:
         wine_id = (await call(s, "create_wine", {"name": NAME, "notes": notes}))["wine"]["wine_id"]
@@ -109,17 +109,18 @@ async def test_list_pages_with_next_token(url, token):
                 await call(s, "delete_wine", {"wine_id": wine_id})
 
 
-async def put_label(upload_url: str) -> None:
+async def upload_label(upload: dict) -> None:
+    """POST the label as the agent does: the link's form fields, then the file."""
     async with create_mcp_http_client() as http:
-        resp = await http.put(upload_url, content=LABEL.read_bytes())
-    assert resp.status_code == 200, resp.text
+        resp = await http.post(upload["upload_url"], data=upload["fields"], files={"file": LABEL.read_bytes()})
+    assert resp.status_code == 204, resp.text
 
 
 async def test_add_photo_then_download_and_search_by_photo(url, token):
     async with session(url, token) as s:
         wine_id = (await call(s, "create_wine", TEST_WINE))["wine"]["wine_id"]
         try:
-            await put_label((await call(s, "add_photo", {"wine_id": wine_id}))["upload_url"])
+            await upload_label(await call(s, "add_photo", {"wine_id": wine_id, "content_type": "image/jpeg"}))
 
             async def saved() -> bool:
                 return bool((await call(s, "get_wine", {"wine_id": wine_id}))["wine"]["photos"])
@@ -127,8 +128,8 @@ async def test_add_photo_then_download_and_search_by_photo(url, token):
             async def found_by_photo() -> bool:
                 # The photo shows on the wine just before its vector is written, so search until it's found.
                 # Each search photo is used once, so every try uploads a fresh one.
-                search = await call(s, "upload_search_photo", {})
-                await put_label(search["upload_url"])
+                search = await call(s, "upload_search_photo", {"content_type": "image/jpeg"})
+                await upload_label(search)
                 matches = (await call(s, "search_wines", {"photo_ref": search["photo_ref"]}))["matches"]
                 return bool(matches) and matches[0]["wine_id"] == wine_id
 
@@ -136,14 +137,15 @@ async def test_add_photo_then_download_and_search_by_photo(url, token):
             await eventually(found_by_photo, "finding the wine by its photo")
             (photo,) = (await call(s, "get_wine", {"wine_id": wine_id}))["wine"]["photos"]
             async with create_mcp_http_client() as http:
-                assert (await http.get(photo["url"])).content == LABEL.read_bytes()
+                download = await http.get(photo["url"])
+            assert (download.headers["content-type"], download.content) == ("image/jpeg", LABEL.read_bytes())
         finally:
             await call(s, "delete_wine", {"wine_id": wine_id})
 
 
 async def test_unuploaded_photo_ref_is_a_clear_error(url, token):
     async with session(url, token) as s:
-        ref = (await call(s, "upload_search_photo", {}))["photo_ref"]
+        ref = (await call(s, "upload_search_photo", {"content_type": "image/jpeg"}))["photo_ref"]
         result = await s.call_tool("search_wines", {"photo_ref": ref})
     assert result.is_error
     assert "upload again" in "".join(getattr(c, "text", "") for c in result.content)
