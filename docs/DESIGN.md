@@ -135,6 +135,10 @@ pre-signed S3 URL (valid 15 minutes), e.g.
   `photo_ref` to `search_wines`. A missing, too large or non-image upload comes
   back as a tool error telling the agent what to do. The photo is deleted after
   the search and never saved; a lifecycle rule removes any left after a day.
+- **Showing a wine's photos**: every wine the tools return lists its `photos`,
+  each with `photo_id`, `added_at` and `url`, a pre-signed S3 GET link valid
+  for an hour. Signing is local, so the links cost no S3 request. Once a
+  photo or its wine is deleted, its link stops working.
 
 This also keeps photos clear of any cap a client puts on MCP request bodies.
 The agent needs network access to the S3 endpoint to upload.

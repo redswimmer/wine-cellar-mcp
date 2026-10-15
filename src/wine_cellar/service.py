@@ -110,6 +110,10 @@ class WineService:
         self.get_wine(user_id, wine_id)
         return self._photo_store().create_wine_upload(user_id, wine_id)
 
+    def photo_url(self, key: str) -> str | None:
+        """A temporary link to download a wine's photo, or None when photos are off."""
+        return self._photos.download_url(key) if self._photos is not None else None
+
     def upload_search_photo(self, user_id: str) -> Upload:
         return self._photo_store().create_search_upload(user_id)
 

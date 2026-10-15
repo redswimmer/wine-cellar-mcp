@@ -42,6 +42,8 @@ what you read off the label. If they sent a label photo, always add_photo and PU
 lookup finds it.
 - Add a note: update_wine with the existing notes plus the new part appended.
 - Change one thing (verdict, vintage, a label fix): update_wine with only that field.
+- Show a wine's label photos: each photo has a url, a link to the image that works for an hour; get_wine again for a \
+fresh one.
 - Browse: list_wines filters by verdict, varietal and when a wine was first recorded or last changed; pass next_token \
 back for more. For descriptions like "that bold red I loved", use search_wines.
 """
@@ -112,15 +114,17 @@ def current_user(ctx: Context) -> str:
     return user_id
 
 
-def _summary(wine: Wine) -> dict[str, Any]:
-    data = wine.model_dump(mode="json", exclude={"user_id", "photo_keys"})
-    data["photos"] = [{"photo_id": p.photo_id, "added_at": p.added_at.isoformat()} for p in wine.photos]
-    data["label"] = wine.label
-    return data
-
-
 def build_server(service: WineService) -> MCPServer:
     mcp = MCPServer(name="wine-cellar", instructions=INSTRUCTIONS)
+
+    def _summary(wine: Wine) -> dict[str, Any]:
+        data = wine.model_dump(mode="json", exclude={"user_id", "photo_keys"})
+        data["photos"] = [
+            {"photo_id": p.photo_id, "added_at": p.added_at.isoformat(), "url": service.photo_url(key)}
+            for key, p in zip(wine.photo_keys, wine.photos, strict=True)
+        ]
+        data["label"] = wine.label
+        return data
 
     @mcp.tool()
     @_traced

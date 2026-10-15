@@ -48,8 +48,8 @@ an agent can't read or change anyone else's.
   whoever runs the service for one.
 
 Any MCP client works if it speaks Streamable HTTP and can send an
-`Authorization: Bearer <token>` header. Photo uploads go straight to S3
-through pre-signed links, so the agent also needs network access to S3 and a
+`Authorization: Bearer <token>` header. Photo uploads and downloads go
+straight to S3 through pre-signed links, so the agent also needs network access to S3 and a
 way to upload a file (e.g. `curl`).
 
 ## Connect your agent

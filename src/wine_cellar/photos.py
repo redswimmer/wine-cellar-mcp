@@ -1,6 +1,7 @@
-"""Label photos: uploads by pre-signed URL, validation and S3 storage.
+"""Label photos: uploads and downloads by pre-signed URL, validation and S3 storage.
 
-Images never travel inside an MCP request; agents PUT them straight to S3 with a pre-signed URL.
+Images never travel inside an MCP request; agents PUT them straight to S3 with a pre-signed URL, and GET a wine's
+photos the same way.
 
 - A wine's photos live at `wines/<user_id>/<wine_id>/<ulid>`. Uploading to a link from `add_photo` saves the photo
   to that wine; an S3 event then checks it, records it on the wine and indexes it.
@@ -21,6 +22,7 @@ MAX_PHOTO_BYTES = 5_000_000
 WINE_PREFIX = "wines/"
 SEARCH_PREFIX = "search/"
 UPLOAD_URL_SECONDS = 900  # how long the agent has to start the upload
+DOWNLOAD_URL_SECONDS = 3600  # how long a photo link in a wine's details works
 SEARCH_RETENTION_DAYS = 1  # search photos that were never searched with are deleted by a bucket lifecycle rule
 
 # Leading bytes of each format Nova accepts.
@@ -80,6 +82,12 @@ class PhotoStore:
             "put_object", Params={"Bucket": self._bucket, "Key": key}, ExpiresIn=UPLOAD_URL_SECONDS
         )
         return Upload(key, url, max_bytes=MAX_PHOTO_BYTES, expires_in_seconds=UPLOAD_URL_SECONDS)
+
+    def download_url(self, key: str) -> str:
+        """A link that GETs a stored photo. Signed locally, so it costs no S3 request."""
+        return self._s3.generate_presigned_url(
+            "get_object", Params={"Bucket": self._bucket, "Key": key}, ExpiresIn=DOWNLOAD_URL_SECONDS
+        )
 
     def create_wine_upload(self, user_id: str, wine_id: str) -> Upload:
         return self._upload_link(f"{WINE_PREFIX}{user_id}/{wine_id}/{ULID()}")

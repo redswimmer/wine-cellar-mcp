@@ -115,7 +115,7 @@ async def put_label(upload_url: str) -> None:
     assert resp.status_code == 200, resp.text
 
 
-async def test_add_photo_then_search_by_photo(url, token):
+async def test_add_photo_then_download_and_search_by_photo(url, token):
     async with session(url, token) as s:
         wine_id = (await call(s, "create_wine", TEST_WINE))["wine"]["wine_id"]
         try:
@@ -134,6 +134,9 @@ async def test_add_photo_then_search_by_photo(url, token):
 
             await eventually(saved, "saving the photo to the wine")
             await eventually(found_by_photo, "finding the wine by its photo")
+            (photo,) = (await call(s, "get_wine", {"wine_id": wine_id}))["wine"]["photos"]
+            async with create_mcp_http_client() as http:
+                assert (await http.get(photo["url"])).content == LABEL.read_bytes()
         finally:
             await call(s, "delete_wine", {"wine_id": wine_id})
 
