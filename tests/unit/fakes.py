@@ -4,17 +4,22 @@ import io
 import json
 import zlib
 
+from botocore.exceptions import ClientError
+
 from wine_cellar.vectors import EMBEDDING_DIMENSION, EMBEDDING_MODEL_ID
 
 
 class FakeBedrock:
     def __init__(self) -> None:
         self.bodies: list[dict] = []
+        self.image_error: str | None = None  # an error code to answer images with, e.g. ValidationException
 
     def invoke_model(self, *, modelId, body, accept, contentType):
         assert modelId == EMBEDDING_MODEL_ID
         self.bodies.append(json.loads(body))
         kind = "IMAGE" if "image" in self.bodies[-1]["singleEmbeddingParams"] else "TEXT"
+        if kind == "IMAGE" and self.image_error:
+            raise ClientError({"Error": {"Code": self.image_error, "Message": "Image refused"}}, "InvokeModel")
         # Different input, different vector, so tests can tell when a vector was rewritten.
         value = zlib.crc32(body.encode()) / 2**32
         out = {"embeddings": [{"embeddingType": kind, "embedding": [value] * EMBEDDING_DIMENSION}]}

@@ -26,6 +26,9 @@ class Wine(BaseModel):
     photo_keys: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # How many times the stored wine has been written; 0 until it is first stored. Each write expects the version it
+    # read, so a write never overwrites one it didn't see (optimistic locking).
+    version: int = 0
 
     @model_validator(mode="before")
     @classmethod

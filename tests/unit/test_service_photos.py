@@ -219,3 +219,11 @@ def test_reindex_skips_photos_it_cannot_read(service, s3, photo_vectors):
     photo_vectors.vectors.clear()
     assert service.reindex(USER) == (1, 1)
     assert list(photo_vectors.vectors) == [good]
+
+
+def test_reindex_skips_photos_bedrock_cannot_read(service, s3, bedrock, photo_vectors):
+    wine = service.create_wine(USER, name="Ridge")
+    add_photo(service, s3, wine.wine_id)
+    photo_vectors.vectors.clear()
+    bedrock.image_error = "ValidationException"
+    assert service.reindex(USER) == (1, 0)

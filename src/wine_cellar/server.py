@@ -21,6 +21,7 @@ from .service import (
     InvalidWineError,
     PhotoNotFoundError,
     PhotosDisabledError,
+    WineBusyError,
     WineNotFoundError,
     WineService,
 )
@@ -52,9 +53,15 @@ WineId = Annotated[str, Field(description="wine_id returned by another tool")]
 NAME_DESCRIPTION = "What the label says, e.g. 'Ridge Monte Bello Cabernet'"
 VARIETAL_DESCRIPTION = "Grape or blend, e.g. 'Cabernet Sauvignon' or 'Grenache blend'"
 VERDICT_DESCRIPTION = "How the person feels about it"
+NOTES_DESCRIPTION = "What the person said about it"
+# Text limits keep a wine well inside DynamoDB's 400 KB item limit and keep fuzzy search fast.
+MAX_NAME = 200
+MAX_NOTES = 20_000
+MAX_QUERY = 500
 ImageTypeArg = Annotated[ImageType, Field(description="The photo's type; the upload must be this type")]
 PhotoRef = Annotated[str | None, Field(description="photo_ref from upload_search_photo, once the photo is uploaded")]
-# Mistakes the agent can fix (unknown wine, no name, bad or missing upload, photos off) come back as tool errors.
+# Mistakes the agent can fix (unknown wine, no name, bad or missing upload, photos off, a wine busy with another
+# change) come back as tool errors.
 AGENT_ERRORS = (
     WineNotFoundError,
     InvalidWineError,
@@ -62,6 +69,7 @@ AGENT_ERRORS = (
     InvalidPhotoError,
     PhotosDisabledError,
     InvalidPageTokenError,
+    WineBusyError,
 )
 
 
@@ -118,7 +126,7 @@ def build_server(service: WineService) -> MCPServer:
     mcp = MCPServer(name="wine-cellar", instructions=INSTRUCTIONS)
 
     def _summary(wine: Wine) -> dict[str, Any]:
-        data = wine.model_dump(mode="json", exclude={"user_id", "photo_keys"})
+        data = wine.model_dump(mode="json", exclude={"user_id", "photo_keys", "version"})
         data["photos"] = [
             {"photo_id": p.photo_id, "added_at": p.added_at.isoformat(), "url": url}
             for p, url in service.photo_links(wine)
@@ -130,10 +138,10 @@ def build_server(service: WineService) -> MCPServer:
     @_agent_errors
     def create_wine(
         ctx: Context,
-        name: Annotated[str, Field(description=NAME_DESCRIPTION)],
-        varietal: Annotated[str, Field(description=VARIETAL_DESCRIPTION)] = "",
+        name: Annotated[str, Field(max_length=MAX_NAME, description=NAME_DESCRIPTION)],
+        varietal: Annotated[str, Field(max_length=MAX_NAME, description=VARIETAL_DESCRIPTION)] = "",
         verdict: Annotated[Verdict | None, Field(description=VERDICT_DESCRIPTION)] = None,
-        notes: Annotated[str, Field(description="What the person said about it")] = "",
+        notes: Annotated[str, Field(max_length=MAX_NOTES, description=NOTES_DESCRIPTION)] = "",
     ) -> dict[str, Any]:
         """Record a wine the person tried and what they thought of it. Only the name is required."""
         wine = service.create_wine(current_user(ctx), name=name, varietal=varietal, verdict=verdict, notes=notes)
@@ -145,15 +153,13 @@ def build_server(service: WineService) -> MCPServer:
     def update_wine(
         ctx: Context,
         wine_id: WineId,
-        name: Annotated[str, Field(default_factory=_unset, description=NAME_DESCRIPTION)],
-        varietal: Annotated[str | None, Field(default_factory=_unset, description=VARIETAL_DESCRIPTION)],
+        name: Annotated[str, Field(default_factory=_unset, max_length=MAX_NAME, description=NAME_DESCRIPTION)],
+        varietal: Annotated[
+            str | None, Field(default_factory=_unset, max_length=MAX_NAME, description=VARIETAL_DESCRIPTION)
+        ],
         verdict: Annotated[Verdict | None, Field(default_factory=_unset, description=VERDICT_DESCRIPTION)],
         notes: Annotated[
-            str | None,
-            Field(
-                default_factory=_unset,
-                description="Replaces the notes",
-            ),
+            str | None, Field(default_factory=_unset, max_length=MAX_NOTES, description="Replaces the notes")
         ],
     ) -> dict[str, Any]:
         """Change a recorded wine.
@@ -217,8 +223,9 @@ def build_server(service: WineService) -> MCPServer:
         query: Annotated[
             str,
             Field(
+                max_length=MAX_QUERY,
                 description="Free text, matched by name and by meaning: a wine's name, "
-                "or a description like 'that bold red I loved'"
+                "or a description like 'that bold red I loved'",
             ),
         ] = "",
         photo_ref: PhotoRef = None,

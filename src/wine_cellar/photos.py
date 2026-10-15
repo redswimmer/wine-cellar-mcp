@@ -19,6 +19,7 @@ from ulid import ULID
 from .models import ImageType, InvalidPhotoError, Upload
 
 MAX_PHOTO_BYTES = 5_000_000
+MAX_PHOTOS_PER_WINE = 10
 WINE_PREFIX = "wines/"
 SEARCH_PREFIX = "search/"
 UPLOAD_URL_SECONDS = 900  # how long the agent has to start the upload
@@ -123,16 +124,23 @@ class PhotoStore:
             raise missing
         try:
             return self.get(photo_ref)
-        except ClientError as e:
-            if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
-                raise missing from e
-            raise
+        except FileNotFoundError as e:
+            raise missing from e
 
     def get(self, key: str) -> Photo:
-        """A stored photo, checked for size, format, and that its bytes are the image type it was uploaded as."""
-        head = self._s3.head_object(Bucket=self._bucket, Key=key)
-        _check_size(head["ContentLength"])
-        photo = sniff(self._s3.get_object(Bucket=self._bucket, Key=key)["Body"].read())
+        """A stored photo, checked for size, format, and that its bytes are the image type it was uploaded as.
+
+        FileNotFoundError if there is no photo at `key`.
+        """
+        try:
+            head = self._s3.head_object(Bucket=self._bucket, Key=key)
+            _check_size(head["ContentLength"])
+            body = self._s3.get_object(Bucket=self._bucket, Key=key)["Body"].read()
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+                raise FileNotFoundError(key) from e
+            raise
+        photo = sniff(body)
         declared, actual = head.get("ContentType", ""), f"image/{photo.format}"
         if declared != actual:
             raise InvalidPhotoError(
