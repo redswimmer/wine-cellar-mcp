@@ -17,13 +17,14 @@ from collections.abc import Callable
 
 import pytest
 
+from wine_cellar.models import ImageType
 from wine_cellar.photos import MAX_PHOTOS_PER_WINE
 from wine_cellar.repository import WineRepository
 from wine_cellar.service import WineNotFoundError
 
 from .conftest import BUCKET, JPEG, USER
 from .test_entrypoint_handler import _ok, _tool, call, tokens  # noqa: F401  (fixtures)
-from .test_service_photos import PDF, add_photo, search_photo
+from .test_service_photos import PDF, add_photo, search_photo, upload
 
 # Tool input
 
@@ -86,9 +87,9 @@ def race(monkeypatch, competitor: Callable[[], object]) -> None:
 
 def uploaded(service, s3, wine_id: str, data: bytes = JPEG) -> str:
     """A photo the agent has uploaded to add_photo's link, whose S3 event hasn't run yet."""
-    key = service.add_photo(USER, wine_id).photo_ref
-    s3.put_object(Bucket=BUCKET, Key=key, Body=data)
-    return key
+    link = service.add_photo(USER, wine_id, ImageType.JPEG)
+    upload(s3, link, data)
+    return link.photo_ref
 
 
 def test_never_loses_a_photo_saved_during_an_update(service, s3, monkeypatch):
@@ -141,7 +142,8 @@ def test_never_brings_back_a_wine_deleted_while_its_photo_is_saved(service, s3, 
 def test_never_keeps_a_photo_whose_file_was_replaced_with_a_non_image(service, s3, photo_vectors):
     wine = service.create_wine(USER, name="Ridge")
     key = add_photo(service, s3, wine.wine_id)
-    s3.put_object(Bucket=BUCKET, Key=key, Body=PDF)  # the same upload link, used again within its 15 minutes
+    # The same upload link, used again within its 15 minutes: S3 checks the declared type, not the bytes.
+    s3.put_object(Bucket=BUCKET, Key=key, Body=PDF, ContentType="image/jpeg")
     service.photo_uploaded(key)
     assert service.get_wine(USER, wine.wine_id).photo_keys == []
     assert photo_vectors.vectors == {}
@@ -167,7 +169,7 @@ def test_never_accepts_unlimited_photos_on_one_wine(service, s3):
     assert len(service.get_wine(USER, wine.wine_id).photo_keys) == MAX_PHOTOS_PER_WINE
     assert s3.list_objects_v2(Bucket=BUCKET)["KeyCount"] == MAX_PHOTOS_PER_WINE
     with pytest.raises(ValueError, match="delete one"):
-        service.add_photo(USER, wine.wine_id)
+        service.add_photo(USER, wine.wine_id, ImageType.JPEG)
 
 
 def test_never_matches_a_photo_search_against_a_deleted_photo(service, s3, photo_vectors, monkeypatch):

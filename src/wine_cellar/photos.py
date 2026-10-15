@@ -1,7 +1,7 @@
 """Label photos: uploads and downloads by pre-signed URL, validation and S3 storage.
 
-Images never travel inside an MCP request; agents PUT them straight to S3 with a pre-signed URL, and GET a wine's
-photos the same way.
+Images never travel inside an MCP request. Agents upload them straight to S3 with a pre-signed POST, whose policy makes
+S3 enforce the declared image type and the size limit, and download a wine's photos with pre-signed GET links.
 
 - A wine's photos live at `wines/<user_id>/<wine_id>/<ulid>`. Uploading to a link from `add_photo` saves the photo
   to that wine; an S3 event then checks it, records it on the wine and indexes it.
@@ -16,7 +16,7 @@ from urllib.parse import unquote_plus
 from botocore.exceptions import ClientError
 from ulid import ULID
 
-from .models import InvalidPhotoError, Upload
+from .models import ImageType, InvalidPhotoError, Upload
 
 MAX_PHOTO_BYTES = 5_000_000
 MAX_PHOTOS_PER_WINE = 10
@@ -78,11 +78,18 @@ class PhotoStore:
         self._s3 = s3
         self._bucket = bucket
 
-    def _upload_link(self, key: str) -> Upload:
-        url = self._s3.generate_presigned_url(
-            "put_object", Params={"Bucket": self._bucket, "Key": key}, ExpiresIn=UPLOAD_URL_SECONDS
+    def _upload_link(self, key: str, image_type: ImageType) -> Upload:
+        """A pre-signed POST for one key. S3 rejects an upload with another Content-Type or over the size limit."""
+        post = self._s3.generate_presigned_post(
+            Bucket=self._bucket,
+            Key=key,
+            Fields={"Content-Type": image_type.value},
+            Conditions=[{"Content-Type": image_type.value}, ["content-length-range", 1, MAX_PHOTO_BYTES]],
+            ExpiresIn=UPLOAD_URL_SECONDS,
         )
-        return Upload(key, url, max_bytes=MAX_PHOTO_BYTES, expires_in_seconds=UPLOAD_URL_SECONDS)
+        return Upload(
+            key, post["url"], post["fields"], max_bytes=MAX_PHOTO_BYTES, expires_in_seconds=UPLOAD_URL_SECONDS
+        )
 
     def download_url(self, key: str) -> str:
         """A link that GETs a stored photo. Signed locally, so it costs no S3 request."""
@@ -90,11 +97,11 @@ class PhotoStore:
             "get_object", Params={"Bucket": self._bucket, "Key": key}, ExpiresIn=DOWNLOAD_URL_SECONDS
         )
 
-    def create_wine_upload(self, user_id: str, wine_id: str) -> Upload:
-        return self._upload_link(f"{WINE_PREFIX}{user_id}/{wine_id}/{ULID()}")
+    def create_wine_upload(self, user_id: str, wine_id: str, image_type: ImageType) -> Upload:
+        return self._upload_link(f"{WINE_PREFIX}{user_id}/{wine_id}/{ULID()}", image_type)
 
-    def create_search_upload(self, user_id: str) -> Upload:
-        return self._upload_link(f"{SEARCH_PREFIX}{user_id}/{ULID()}")
+    def create_search_upload(self, user_id: str, image_type: ImageType) -> Upload:
+        return self._upload_link(f"{SEARCH_PREFIX}{user_id}/{ULID()}", image_type)
 
     def load_search_photo(self, user_id: str, photo_ref: str) -> Photo:
         """The checked photo behind a search photo_ref. Refs only resolve for the user who created them."""
@@ -112,9 +119,17 @@ class PhotoStore:
             raise
 
     def get(self, key: str) -> Photo:
-        """A stored photo, checked for size and format."""
-        _check_size(self._s3.head_object(Bucket=self._bucket, Key=key)["ContentLength"])
-        return sniff(self._s3.get_object(Bucket=self._bucket, Key=key)["Body"].read())
+        """A stored photo, checked for size, format, and that its bytes are the image type it was uploaded as."""
+        head = self._s3.head_object(Bucket=self._bucket, Key=key)
+        _check_size(head["ContentLength"])
+        photo = sniff(self._s3.get_object(Bucket=self._bucket, Key=key)["Body"].read())
+        declared, actual = head.get("ContentType", ""), f"image/{photo.format}"
+        if declared != actual:
+            raise InvalidPhotoError(
+                f"The photo was uploaded as {declared} but is a {photo.format.upper()}. "
+                f"Get a new link with content_type {actual} and upload again."
+            )
+        return photo
 
     def delete_wine_photos(self, user_id: str, wine_id: str) -> None:
         pages = self._s3.get_paginator("list_objects_v2").paginate(
