@@ -24,6 +24,7 @@ def test_reads_wines_saved_before_the_model_was_simplified():
             "region": "Santa Cruz",
             "tastings": [],
             "rating": 5,
+            "vintage": 2019,
         }
     )
     assert (wine.name, wine.varietal) == ("Ridge Monte Bello", "Cab, Merlot")
@@ -34,13 +35,12 @@ def test_wine_text_includes_label_details_and_what_the_person_said():
         wine_id="w1",
         user_id=USER,
         name="Ridge Monte Bello",
-        vintage=2019,
         varietal="Cabernet Sauvignon",
         verdict=Verdict.LOVE,
         notes="Huge and structured",
     )
     text = wine_text(wine)
-    for part in ["Ridge Monte Bello 2019", "Cabernet", "love", "Huge"]:
+    for part in ["Ridge Monte Bello", "Cabernet", "love", "Huge"]:
         assert part in text
 
 

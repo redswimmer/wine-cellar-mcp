@@ -24,7 +24,7 @@ EXPECTED_TOOLS = {
     "delete_wine",
 }
 LABEL = Path(__file__).with_name("label.jpg")
-TEST_WINE = {"name": NAME, "vintage": 2020, "verdict": "like"}
+TEST_WINE = {"name": NAME, "verdict": "like"}
 INITIALIZE = {
     "jsonrpc": "2.0",
     "id": 1,
@@ -76,7 +76,7 @@ async def test_create_update_search_delete_round_trip(url, token):
 
 
 async def test_search_by_notes_uses_the_text_vectors(url, token):
-    # Name matching only reads the name, vintage and varietal, so only the text vectors can find a phrase in the notes.
+    # Name matching only reads the name and varietal, so only the text vectors can find a phrase in the notes.
     notes = "Smoked cherries and pipe tobacco, served at the lake house"
     async with session(url, token) as s:
         wine_id = (await call(s, "create_wine", {"name": NAME, "notes": notes}))["wine"]["wine_id"]
@@ -109,10 +109,11 @@ async def test_list_pages_with_next_token(url, token):
                 await call(s, "delete_wine", {"wine_id": wine_id})
 
 
-async def put_label(upload_url: str) -> None:
+async def upload_label(upload: dict) -> None:
+    """POST the label as the agent does: the link's form fields, then the file."""
     async with create_mcp_http_client() as http:
-        resp = await http.put(upload_url, content=LABEL.read_bytes())
-    assert resp.status_code == 200, resp.text
+        resp = await http.post(upload["upload_url"], data=upload["fields"], files={"file": LABEL.read_bytes()})
+    assert resp.status_code == 204, resp.text
 
 
 async def get_status(photo_url: str) -> int:
@@ -135,7 +136,7 @@ async def test_record_then_recall_by_label_photo(url, token):
 
             async def add_label(count: int) -> None:
                 # One at a time: the upload event saves each photo to the wine.
-                await put_label((await call(s, "add_photo", {"wine_id": wine_id}))["upload_url"])
+                await upload_label(await call(s, "add_photo", {"wine_id": wine_id, "content_type": "image/jpeg"}))
 
                 async def saved() -> bool:
                     return len(await photos()) == count
@@ -145,34 +146,33 @@ async def test_record_then_recall_by_label_photo(url, token):
             await add_label(1)
             await add_label(2)
 
-            search: dict = {}
+            async def search_photo() -> dict:
+                search = await call(s, "upload_search_photo", {"content_type": "image/jpeg"})
+                await upload_label(search)
+                return search
 
             async def found_by_photo() -> bool:
                 # The photo shows on the wine just before its vector is written, so search until it's found.
                 # Each search photo is used once, so every try uploads a fresh one.
-                search.update(await call(s, "upload_search_photo", {}))
-                await put_label(search["upload_url"])
-                matches = (await call(s, "search_wines", {"photo_ref": search["photo_ref"]}))["matches"]
+                matches = (await call(s, "search_wines", {"photo_ref": (await search_photo())["photo_ref"]}))["matches"]
                 return bool(matches) and matches[0]["wine_id"] == wine_id
 
             await eventually(found_by_photo, "finding the wine by its photo")
 
             # What an agent sends in the store: the photo plus the name read off the label. The verdict comes back.
-            label_search = await call(s, "upload_search_photo", {})
-            await put_label(label_search["upload_url"])
-            (best, *_) = (await call(s, "search_wines", {"photo_ref": label_search["photo_ref"], "query": NAME}))[
-                "matches"
-            ]
+            ref = (await search_photo())["photo_ref"]
+            (best, *_) = (await call(s, "search_wines", {"photo_ref": ref, "query": NAME}))["matches"]
             assert (best["wine_id"], best["verdict"]) == (wine_id, TEST_WINE["verdict"])
 
             # The search photo was deleted after use, so its photo_ref doesn't work twice.
-            reused = await s.call_tool("search_wines", {"photo_ref": label_search["photo_ref"]})
+            reused = await s.call_tool("search_wines", {"photo_ref": ref})
             assert reused.is_error
             assert "upload again" in "".join(getattr(c, "text", "") for c in reused.content)
 
             first, second = await photos()
             async with create_mcp_http_client() as http:
-                assert (await http.get(first["url"])).content == LABEL.read_bytes()
+                download = await http.get(first["url"])
+            assert (download.headers["content-type"], download.content) == ("image/jpeg", LABEL.read_bytes())
 
             await call(s, "delete_photo", {"wine_id": wine_id, "photo_id": first["photo_id"]})
             assert [p["photo_id"] for p in await photos()] == [second["photo_id"]]
@@ -185,7 +185,7 @@ async def test_record_then_recall_by_label_photo(url, token):
 
 async def test_unuploaded_photo_ref_is_a_clear_error(url, token):
     async with session(url, token) as s:
-        ref = (await call(s, "upload_search_photo", {}))["photo_ref"]
+        ref = (await call(s, "upload_search_photo", {"content_type": "image/jpeg"}))["photo_ref"]
         result = await s.call_tool("search_wines", {"photo_ref": ref})
     assert result.is_error
     assert "upload again" in "".join(getattr(c, "text", "") for c in result.content)
