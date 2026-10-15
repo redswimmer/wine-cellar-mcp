@@ -33,7 +33,7 @@ Under the hood, these are the tools your agent sees:
 | `delete_photo` | Remove a photo from a wine |
 | `upload_search_photo` | Get a link to upload a photo to search with |
 
-A wine has a name (free text from the label), an optional vintage and
+A wine has a name (free text from the label), an optional
 varietal, a verdict (`love`, `like`, `meh`, `dislike`), notes, and photos.
 Search photos are deleted after the search and never saved.
 

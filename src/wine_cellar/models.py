@@ -20,7 +20,6 @@ class Wine(BaseModel):
     wine_id: str
     user_id: str
     name: str = Field(description="What the label says, e.g. 'Ridge Monte Bello Cabernet'")
-    vintage: int | None = Field(default=None, description="Year on the label, or null for non-vintage")
     varietal: str = Field(default="", description="Grape or blend, e.g. 'Cabernet Sauvignon'")
     verdict: Verdict | None = None
     notes: str = ""
@@ -31,7 +30,10 @@ class Wine(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _from_old_fields(cls, data: Any) -> Any:
-        """Read wines stored before the model was simplified (producer + name, a varietals list)."""
+        """Read wines stored before the model was simplified (producer + name, a varietals list).
+
+        Unknown fields, such as a vintage stored before it was dropped, are ignored.
+        """
         if isinstance(data, dict) and "producer" in data:
             data = dict(data)
             data["name"] = " ".join(p for p in [data.pop("producer"), data.get("name", "")] if p)
@@ -41,11 +43,7 @@ class Wine(BaseModel):
 
     @property
     def search_text(self) -> str:
-        return " ".join(p for p in [self.name, str(self.vintage or ""), self.varietal] if p).lower()
-
-    @property
-    def label(self) -> str:
-        return " ".join(p for p in [self.name, str(self.vintage) if self.vintage else ""] if p)
+        return " ".join(p for p in [self.name, self.varietal] if p).lower()
 
     @property
     def photos(self) -> list["PhotoInfo"]:

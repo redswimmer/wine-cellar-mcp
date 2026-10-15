@@ -24,7 +24,7 @@ EXPECTED_TOOLS = {
     "delete_wine",
 }
 LABEL = Path(__file__).with_name("label.jpg")
-TEST_WINE = {"name": NAME, "vintage": 2020, "verdict": "like"}
+TEST_WINE = {"name": NAME, "verdict": "like"}
 INITIALIZE = {
     "jsonrpc": "2.0",
     "id": 1,
@@ -76,7 +76,7 @@ async def test_create_update_search_delete_round_trip(url, token):
 
 
 async def test_search_by_notes_uses_the_text_vectors(url, token):
-    # Name matching only reads the name, vintage and varietal, so only the text vectors can find a phrase in the notes.
+    # Name matching only reads the name and varietal, so only the text vectors can find a phrase in the notes.
     notes = "Smoked cherries and pipe tobacco, served at the lake house"
     async with session(url, token) as s:
         wine_id = (await call(s, "create_wine", {"name": NAME, "notes": notes}))["wine"]["wine_id"]
