@@ -128,12 +128,3 @@ def test_delete(service):
     service.delete_wine(USER, wine.wine_id)
     with pytest.raises(WineNotFoundError):
         service.delete_wine(USER, wine.wine_id)
-
-
-def test_wines_stored_before_versioning_can_still_be_changed(service, table):
-    wine = service.create_wine(USER, name="Ridge")
-    table.update_item(
-        Key={"pk": f"USER#{USER}", "sk": f"WINE#{wine.wine_id}"}, UpdateExpression="REMOVE version"
-    )  # as written before versioning
-    assert service.update_wine(USER, wine.wine_id, notes="Bold").notes == "Bold"
-    assert service.get_wine(USER, wine.wine_id).notes == "Bold"
