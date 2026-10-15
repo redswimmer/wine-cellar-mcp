@@ -1,8 +1,11 @@
 """High gear: label photos through WineService, with S3 on moto and fake vectors."""
 
+import base64
+import json
+
 import pytest
 
-from wine_cellar.models import InvalidPhotoError, photo_id_of
+from wine_cellar.models import ImageType, InvalidPhotoError, Upload, photo_id_of
 from wine_cellar.photos import MAX_PHOTO_BYTES, PhotoStore
 from wine_cellar.repository import WineRepository
 from wine_cellar.service import PhotoNotFoundError, PhotosDisabledError, WineNotFoundError, WineService
@@ -15,30 +18,40 @@ PDF = b"%PDF-1.7"
 TOO_BIG = b"\xff\xd8\xff" + b"x" * MAX_PHOTO_BYTES
 
 
-def search_photo(service, s3, data: bytes = JPEG, user: str = USER) -> str:
-    """What the agent does to search by photo: get an upload link, PUT the file, keep the photo_ref."""
-    ref = service.upload_search_photo(user).photo_ref
-    s3.put_object(Bucket=BUCKET, Key=ref, Body=data)
-    return ref
+def upload(s3, link: Upload, data: bytes) -> None:
+    """What S3 stores when the agent POSTs to the link: the file, with the Content-Type the link requires."""
+    s3.put_object(Bucket=BUCKET, Key=link.photo_ref, Body=data, ContentType=link.fields["Content-Type"])
 
 
-def add_photo(service, s3, wine_id: str, data: bytes = JPEG) -> str:
-    """The agent PUTs a photo to add_photo's link; S3 then sends the upload event."""
-    key = service.add_photo(USER, wine_id).photo_ref
-    s3.put_object(Bucket=BUCKET, Key=key, Body=data)
-    service.photo_uploaded(key)
-    return key
+def search_photo(service, s3, data: bytes = JPEG, user: str = USER, image_type: ImageType = ImageType.JPEG) -> str:
+    """What the agent does to search by photo: get an upload link, upload the file, keep the photo_ref."""
+    link = service.upload_search_photo(user, image_type)
+    upload(s3, link, data)
+    return link.photo_ref
+
+
+def add_photo(service, s3, wine_id: str, data: bytes = JPEG, image_type: ImageType = ImageType.JPEG) -> str:
+    """The agent uploads a photo to add_photo's link; S3 then sends the upload event."""
+    link = service.add_photo(USER, wine_id, image_type)
+    upload(s3, link, data)
+    service.photo_uploaded(link.photo_ref)
+    return link.photo_ref
 
 
 def test_add_photo_link_uploads_straight_to_the_wine(service):
     wine = service.create_wine(USER, name="Ridge")
-    link = service.add_photo(USER, wine.wine_id)
+    link = service.add_photo(USER, wine.wine_id, ImageType.PNG)
     assert link.photo_ref.startswith(f"wines/{USER}/{wine.wine_id}/")  # the S3 upload event filters on this
+    assert (link.fields["key"], link.fields["Content-Type"]) == (link.photo_ref, "image/png")
+    # S3 enforces the policy: only this type, and nothing empty or over the size limit, gets stored.
+    conditions = json.loads(base64.b64decode(link.fields["policy"]))["conditions"]
+    assert {"Content-Type": "image/png"} in conditions
+    assert ["content-length-range", 1, MAX_PHOTO_BYTES] in conditions
 
 
 def test_add_photo_needs_an_existing_wine(service):
     with pytest.raises(WineNotFoundError):
-        service.add_photo(USER, "nope")
+        service.add_photo(USER, "nope", ImageType.JPEG)
 
 
 def test_uploaded_photo_is_saved_to_the_wine_and_indexed(service, s3, photo_vectors):
@@ -51,6 +64,7 @@ def test_uploaded_photo_is_saved_to_the_wine_and_indexed(service, s3, photo_vect
     assert saved.photo_keys == [first, second]
     assert saved.updated_at > wine.updated_at
     assert sorted(photo_vectors.vectors) == sorted([first, second])
+    assert s3.head_object(Bucket=BUCKET, Key=first)["ContentType"] == "image/jpeg"
 
 
 def test_uploads_outside_wines_are_ignored(service, s3):
@@ -66,6 +80,26 @@ def test_unusable_uploads_to_a_wine_are_discarded(service, s3, photo_vectors, da
     assert service.get_wine(USER, wine.wine_id).photo_keys == []
     assert s3.list_objects_v2(Bucket=BUCKET).get("KeyCount") == 0
     assert photo_vectors.vectors == {}
+
+
+def test_photo_that_isnt_its_declared_type_is_discarded(service, s3):
+    wine = service.create_wine(USER, name="Ridge")
+    add_photo(service, s3, wine.wine_id, JPEG, ImageType.PNG)  # JPEG bytes uploaded as image/png
+    assert service.get_wine(USER, wine.wine_id).photo_keys == []
+    assert s3.list_objects_v2(Bucket=BUCKET).get("KeyCount") == 0
+
+
+def test_search_photo_of_the_wrong_type_says_which_type_to_use(service, s3):
+    with pytest.raises(InvalidPhotoError, match="content_type image/jpeg"):
+        service.search_wines(USER, photo_ref=search_photo(service, s3, JPEG, image_type=ImageType.GIF))
+
+
+def test_photos_stored_before_uploads_had_a_type_still_read(service, s3, photo_vectors):
+    wine = service.create_wine(USER, name="Ridge")
+    key = add_photo(service, s3, wine.wine_id)
+    s3.put_object(Bucket=BUCKET, Key=key, Body=JPEG)  # as the old PUT links stored it: binary/octet-stream
+    photo_vectors.vectors.clear()
+    assert service.reindex(USER) == (1, 1)
 
 
 def test_delete_photo_removes_just_that_photo(service, s3, photo_vectors):
@@ -96,10 +130,10 @@ def test_delete_photo_survives_storage_failures(table, s3, bedrock, service):
 
 def test_photo_for_a_deleted_wine_is_discarded(service, s3):
     wine = service.create_wine(USER, name="Ridge")
-    key = service.add_photo(USER, wine.wine_id).photo_ref
+    link = service.add_photo(USER, wine.wine_id, ImageType.JPEG)
     service.delete_wine(USER, wine.wine_id)
-    s3.put_object(Bucket=BUCKET, Key=key, Body=JPEG)
-    service.photo_uploaded(key)
+    upload(s3, link, JPEG)
+    service.photo_uploaded(link.photo_ref)
     assert s3.list_objects_v2(Bucket=BUCKET).get("KeyCount") == 0
 
 
@@ -107,7 +141,7 @@ def test_delete_wine_removes_its_photos_and_vectors(service, s3, photo_vectors):
     wine = service.create_wine(USER, name="Ridge")
     add_photo(service, s3, wine.wine_id)
     # Uploaded, but its event hasn't run yet.
-    s3.put_object(Bucket=BUCKET, Key=service.add_photo(USER, wine.wine_id).photo_ref, Body=JPEG)
+    upload(s3, service.add_photo(USER, wine.wine_id, ImageType.JPEG), JPEG)
     service.delete_wine(USER, wine.wine_id)
     assert s3.list_objects_v2(Bucket=BUCKET).get("KeyCount") == 0
     assert photo_vectors.vectors == {}
@@ -124,7 +158,7 @@ def test_bad_search_photos_are_rejected_with_a_useful_message(service, s3, data,
 
 
 def test_missing_search_photo_says_to_upload_again(service):
-    ref = service.upload_search_photo(USER).photo_ref  # link created, but nothing was uploaded
+    ref = service.upload_search_photo(USER, ImageType.JPEG).photo_ref  # link created, but nothing was uploaded
     with pytest.raises(InvalidPhotoError, match="upload again"):
         service.search_wines(USER, photo_ref=ref)
 
@@ -180,9 +214,9 @@ def test_photos_need_a_bucket(table):
     service = WineService(WineRepository(table))
     wine = service.create_wine(USER, name="Ridge")
     with pytest.raises(PhotosDisabledError):
-        service.upload_search_photo(USER)
+        service.upload_search_photo(USER, ImageType.JPEG)
     with pytest.raises(PhotosDisabledError):
-        service.add_photo(USER, wine.wine_id)
+        service.add_photo(USER, wine.wine_id, ImageType.JPEG)
 
 
 def test_reindex_skips_photos_it_cannot_read(service, s3, photo_vectors):
