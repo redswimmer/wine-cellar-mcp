@@ -1,7 +1,7 @@
 """Drives the real Lambda handler with API Gateway HTTP API (v2) events."""
 
 import json
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import pytest
 
@@ -138,20 +138,32 @@ def test_create_update_then_search_over_http(call):
     assert matches[0]["label"] == "Ridge Monte Bello"
 
 
-def test_wine_photos_are_listed_and_can_be_deleted(call, service, s3):
+def _key_of(url: str) -> str:
+    return unquote(urlparse(url).path.removeprefix(f"/{BUCKET}").lstrip("/"))
+
+
+def test_wine_photos_are_listed_with_download_links_and_can_be_deleted(call, service, s3):
     wine_id = _ok(call, "create_wine", {"name": "Ridge"})["wine"]["wine_id"]
-    upload = _ok(call, "add_photo", {"wine_id": wine_id})
-    assert (upload["method"], upload["max_bytes"]) == ("PUT", MAX_PHOTO_BYTES)
-    # What happens after the agent PUTs to the link: the file lands at the link's key and the S3 event records it.
-    key = unquote(urlparse(upload["upload_url"]).path.removeprefix(f"/{BUCKET}").lstrip("/"))
-    s3.put_object(Bucket=BUCKET, Key=key, Body=JPEG)
-    service.photo_uploaded(key)
+    keys = []
+    for _ in range(2):
+        upload = _ok(call, "add_photo", {"wine_id": wine_id})
+        assert (upload["method"], upload["max_bytes"]) == ("PUT", MAX_PHOTO_BYTES)
+        # What happens after the agent PUTs to the link: the file lands at the link's key and the S3 event records it.
+        keys.append(_key_of(upload["upload_url"]))
+        s3.put_object(Bucket=BUCKET, Key=keys[-1], Body=JPEG)
+        service.photo_uploaded(keys[-1])
 
     photos = _ok(call, "get_wine", {"wine_id": wine_id})["wine"]["photos"]
-    assert [p["photo_id"] for p in photos] == [photo_id_of(key)]
-    assert photos[0]["added_at"]
-    deleted = _ok(call, "delete_photo", {"wine_id": wine_id, "photo_id": photo_id_of(key)})["wine"]
-    assert deleted["photos"] == []
+    assert [p["photo_id"] for p in photos] == [photo_id_of(k) for k in keys]
+    assert all(p["added_at"] for p in photos)
+    # Each photo links to its own image, and list_wines and search_wines return the same links.
+    assert [_key_of(p["url"]) for p in photos] == keys
+    assert all(parse_qs(urlparse(p["url"]).query)["X-Amz-Expires"] == ["3600"] for p in photos)
+    assert _ok(call, "list_wines", {})["wines"][0]["photos"] == photos
+    assert _ok(call, "search_wines", {"query": "ridge"})["matches"][0]["photos"] == photos
+
+    deleted = _ok(call, "delete_photo", {"wine_id": wine_id, "photo_id": photo_id_of(keys[0])})["wine"]
+    assert [p["photo_id"] for p in deleted["photos"]] == [photo_id_of(keys[1])]
 
     assert _ok(call, "delete_wine", {"wine_id": wine_id}) == {"deleted": wine_id}
 

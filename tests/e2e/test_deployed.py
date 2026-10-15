@@ -1,4 +1,5 @@
-"""Smoke tests for a deployed endpoint: auth, the tool list, list paging, save/search/get/delete round trips."""
+"""Smoke tests for a deployed endpoint: auth, the tool list, list paging, save/search/get/delete round trips, and a
+photo's full life: add, download, search, delete."""
 
 import asyncio
 import time
@@ -115,14 +116,24 @@ async def put_label(upload_url: str) -> None:
     assert resp.status_code == 200, resp.text
 
 
-async def test_add_photo_then_search_by_photo(url, token):
+async def get_photo(photo_url: str) -> int:
+    """Download a photo from its link: the status, and checks the bytes when it's there."""
+    async with create_mcp_http_client() as http:
+        resp = await http.get(photo_url)
+    if resp.status_code == 200:
+        assert resp.content == LABEL.read_bytes()
+    return resp.status_code
+
+
+async def test_photo_lifecycle_add_download_search_delete(url, token):
     async with session(url, token) as s:
         wine_id = (await call(s, "create_wine", TEST_WINE))["wine"]["wine_id"]
         try:
-            await put_label((await call(s, "add_photo", {"wine_id": wine_id}))["upload_url"])
+            for _ in range(2):
+                await put_label((await call(s, "add_photo", {"wine_id": wine_id}))["upload_url"])
 
             async def saved() -> bool:
-                return bool((await call(s, "get_wine", {"wine_id": wine_id}))["wine"]["photos"])
+                return len((await call(s, "get_wine", {"wine_id": wine_id}))["wine"]["photos"]) == 2
 
             async def found_by_photo() -> bool:
                 # The photo shows on the wine just before its vector is written, so search until it's found.
@@ -132,10 +143,18 @@ async def test_add_photo_then_search_by_photo(url, token):
                 matches = (await call(s, "search_wines", {"photo_ref": search["photo_ref"]}))["matches"]
                 return bool(matches) and matches[0]["wine_id"] == wine_id
 
-            await eventually(saved, "saving the photo to the wine")
+            await eventually(saved, "saving both photos to the wine")
             await eventually(found_by_photo, "finding the wine by its photo")
+
+            first, second = (await call(s, "get_wine", {"wine_id": wine_id}))["wine"]["photos"]
+            assert [await get_photo(p["url"]) for p in (first, second)] == [200, 200]
+
+            await call(s, "delete_photo", {"wine_id": wine_id, "photo_id": first["photo_id"]})
+            assert await get_photo(first["url"]) in (403, 404)
+            assert await get_photo(second["url"]) == 200
         finally:
             await call(s, "delete_wine", {"wine_id": wine_id})
+        assert await get_photo(second["url"]) in (403, 404)  # deleting the wine deletes its photos
 
 
 async def test_unuploaded_photo_ref_is_a_clear_error(url, token):
