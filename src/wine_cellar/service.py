@@ -15,7 +15,7 @@ from . import search
 from .models import ImageType, InvalidPhotoError, PhotoInfo, Upload, Verdict, Wine, photo_id_of
 from .photos import MAX_PHOTOS_PER_WINE, PhotoStore, wine_photo_owner
 from .repository import WineRepository, WriteConflictError
-from .vectors import WinePhotoIndex, WineTextIndex
+from .vectors import PhotoIndex, TextIndex
 
 log = logging.getLogger(__name__)
 
@@ -60,10 +60,10 @@ class WineService:
     def __init__(
         self,
         repo: WineRepository,
-        text_index: WineTextIndex | None = None,
+        text_index: TextIndex | None = None,
         *,
         photos: PhotoStore | None = None,
-        photo_index: WinePhotoIndex | None = None,
+        photo_index: PhotoIndex | None = None,
     ) -> None:
         self._repo = repo
         self._text_index = text_index

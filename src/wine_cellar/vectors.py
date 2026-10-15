@@ -5,7 +5,7 @@ Text and photo vectors live in separate indexes and are never compared with each
 
 import base64
 import json
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from botocore.exceptions import ClientError
 
@@ -72,6 +72,29 @@ def wine_text(wine: Wine) -> str:
         if value
     )
     return "\n".join(lines)
+
+
+class TextIndex(Protocol):
+    """Search by meaning over a user's wines. WineTextIndex is the S3 Vectors implementation."""
+
+    def upsert(self, wine: Wine) -> None: ...
+
+    def delete(self, wine_id: str) -> None: ...
+
+    def query(self, user_id: str, text: str, top_k: int = 10) -> list[str]: ...
+
+
+class PhotoIndex(Protocol):
+    """Search by label photo over a user's photos. WinePhotoIndex is the S3 Vectors implementation.
+
+    `upsert` and `query` raise InvalidPhotoError for an image that can't be read; any other error is a passing failure.
+    """
+
+    def upsert(self, photo_key: str, image: bytes, image_format: str, *, user_id: str, wine_id: str) -> None: ...
+
+    def delete(self, photo_keys: list[str]) -> None: ...
+
+    def query(self, user_id: str, image: bytes, image_format: str, top_k: int = 10) -> list[str]: ...
 
 
 class WineTextIndex:
