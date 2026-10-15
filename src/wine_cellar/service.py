@@ -12,7 +12,7 @@ from typing import Any
 from ulid import ULID
 
 from . import search
-from .models import ImageType, InvalidPhotoError, Upload, Verdict, Wine, photo_id_of
+from .models import ImageType, InvalidPhotoError, PhotoInfo, Upload, Verdict, Wine, photo_id_of
 from .photos import MAX_PHOTOS_PER_WINE, PhotoStore, wine_photo_owner
 from .repository import WineRepository, WriteConflictError
 from .vectors import WinePhotoIndex, WineTextIndex
@@ -34,6 +34,10 @@ def _best_effort[T](action: Callable[[], T], what: str) -> T | None:
     except Exception:
         log.exception("%s failed", what)
         return None
+
+
+class WineBusyError(RuntimeError):
+    """Other writes to the wine kept getting there first; trying again later will work."""
 
 
 class InvalidPageTokenError(ValueError):
@@ -79,9 +83,9 @@ class WineService:
                 return wine
             try:
                 return self._repo.put(changed)
-            except WriteConflictError:
+            except WriteConflictError as e:
                 if attempt == WRITE_ATTEMPTS:
-                    raise
+                    raise WineBusyError(f"Wine {wine_id} was being changed at the same time; try again") from e
         raise AssertionError("unreachable")
 
     def _index_text(self, wine: Wine) -> None:
@@ -111,7 +115,7 @@ class WineService:
             verdict=verdict,
             notes=notes.strip(),
         )
-        wine = self._repo.put(wine)
+        wine = self._repo.put(wine, new=True)
         self._index_text(wine)
         return wine
 
@@ -133,9 +137,18 @@ class WineService:
         _check_room_for_photo(self.get_wine(user_id, wine_id))
         return self._photo_store().create_wine_upload(user_id, wine_id, image_type)
 
-    def photo_url(self, key: str) -> str | None:
-        """A temporary link to download a wine's photo, or None when photos are off."""
-        return self._photos.download_url(key) if self._photos is not None else None
+    def photo_links(self, wine: Wine) -> list[tuple[PhotoInfo, str | None]]:
+        """A wine's photos, each with a temporary download link (None when photos are off).
+
+        Only photos in the wine's own folder are listed, whatever the record holds, so a link never reaches another
+        user's photo.
+        """
+        photos = self._photos
+        return [
+            (info, photos.download_url(key) if photos is not None else None)
+            for key, info in zip(wine.photo_keys, wine.photos, strict=True)
+            if wine_photo_owner(key) == (wine.user_id, wine.wine_id)
+        ]
 
     def upload_search_photo(self, user_id: str, image_type: ImageType) -> Upload:
         return self._photo_store().create_search_upload(user_id, image_type)
@@ -163,8 +176,12 @@ class WineService:
                 self._photo_index.upsert(key, photo.data, photo.format, user_id=user_id, wine_id=wine_id)
             # The text vector doesn't describe photos, so it needs no refresh.
             self._modify(user_id, wine_id, partial(_with_photo, key=key))
+        except FileNotFoundError:
+            # Deleted before this event ran (a late or repeated event): nothing to record.
+            log.info("Ignoring upload event for a photo that is gone: %s", key)
         except (InvalidPhotoError, WineNotFoundError) as e:
-            log.warning("Removing photo %s: %s", key, e)
+            # Logged as an error: if Bedrock starts rejecting every photo (a bad request after a deploy), it shows.
+            log.error("Removing photo %s: %s", key, e)
             self._discard_photo(user_id, wine_id, key)
 
     def _discard_photo(self, user_id: str, wine_id: str, key: str) -> None:
@@ -204,9 +221,14 @@ class WineService:
                 continue
             for key in wine.photo_keys:
                 photo = _best_effort(partial(photos.get, key), f"Reading photo {key}")
-                if photo is not None:
+                if photo is None:
+                    continue
+                try:
                     photo_index.upsert(key, photo.data, photo.format, user_id=user_id, wine_id=wine.wine_id)
-                    n_photos += 1
+                except InvalidPhotoError:
+                    log.exception("Skipping photo %s, which Bedrock can't read", key)
+                    continue
+                n_photos += 1
         return len(wines), n_photos
 
     def get_wine(self, user_id: str, wine_id: str) -> Wine:

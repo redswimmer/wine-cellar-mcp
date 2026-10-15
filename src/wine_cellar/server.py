@@ -21,6 +21,7 @@ from .service import (
     InvalidWineError,
     PhotoNotFoundError,
     PhotosDisabledError,
+    WineBusyError,
     WineNotFoundError,
     WineService,
 )
@@ -59,7 +60,8 @@ MAX_NOTES = 20_000
 MAX_QUERY = 500
 ImageTypeArg = Annotated[ImageType, Field(description="The photo's type; the upload must be this type")]
 PhotoRef = Annotated[str | None, Field(description="photo_ref from upload_search_photo, once the photo is uploaded")]
-# Mistakes the agent can fix (unknown wine, no name, bad or missing upload, photos off) come back as tool errors.
+# Mistakes the agent can fix (unknown wine, no name, bad or missing upload, photos off, a wine busy with another
+# change) come back as tool errors.
 AGENT_ERRORS = (
     WineNotFoundError,
     InvalidWineError,
@@ -67,6 +69,7 @@ AGENT_ERRORS = (
     InvalidPhotoError,
     PhotosDisabledError,
     InvalidPageTokenError,
+    WineBusyError,
 )
 
 
@@ -125,8 +128,8 @@ def build_server(service: WineService) -> MCPServer:
     def _summary(wine: Wine) -> dict[str, Any]:
         data = wine.model_dump(mode="json", exclude={"user_id", "photo_keys", "version"})
         data["photos"] = [
-            {"photo_id": p.photo_id, "added_at": p.added_at.isoformat(), "url": service.photo_url(key)}
-            for key, p in zip(wine.photo_keys, wine.photos, strict=True)
+            {"photo_id": p.photo_id, "added_at": p.added_at.isoformat(), "url": url}
+            for p, url in service.photo_links(wine)
         ]
         return data
 

@@ -29,18 +29,20 @@ class WineRepository:
     def __init__(self, table: Any) -> None:
         self._table = table
 
-    def put(self, wine: Wine) -> Wine:
+    def put(self, wine: Wine, *, new: bool = False) -> Wine:
         """Store a wine and return it with its new version.
 
-        The write only succeeds if the stored wine still has the version this one was read with (none for a new wine,
-        or one stored before versioning), so concurrent writes can't silently undo each other and a deleted wine
-        can't come back. Otherwise WriteConflictError is raised.
+        A new wine is only created, never written over another. Any other write only succeeds if the stored wine still
+        has the version this one was read with (none, for one stored before versioning), so concurrent writes can't
+        silently undo each other and a deleted wine can't come back. Otherwise WriteConflictError is raised.
         """
         condition: dict[str, Any] = {"ExpressionAttributeNames": {"#v": "version"}}
-        if wine.version:
+        if new:
+            condition = {"ConditionExpression": "attribute_not_exists(pk)"}
+        elif wine.version:
             condition |= {"ConditionExpression": "#v = :v", "ExpressionAttributeValues": {":v": wine.version}}
         else:
-            condition |= {"ConditionExpression": "attribute_not_exists(#v)"}
+            condition |= {"ConditionExpression": "attribute_exists(pk) AND attribute_not_exists(#v)"}
         stored = wine.model_copy(update={"version": wine.version + 1})
         try:
             # Stored as a JSON document plus keys, so Decimal conversion and schema drift stay out of the way.

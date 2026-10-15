@@ -16,10 +16,11 @@ Rules already covered elsewhere:
 from collections.abc import Callable
 
 import pytest
+from botocore.exceptions import ClientError
 
-from wine_cellar.models import ImageType
+from wine_cellar.models import ImageType, photo_id_of
 from wine_cellar.photos import MAX_PHOTOS_PER_WINE
-from wine_cellar.repository import WineRepository
+from wine_cellar.repository import WineRepository, WriteConflictError
 from wine_cellar.service import WineNotFoundError
 
 from .conftest import BUCKET, JPEG, USER
@@ -136,6 +137,27 @@ def test_never_brings_back_a_wine_deleted_while_its_photo_is_saved(service, s3, 
     assert photo_vectors.vectors == {}
 
 
+def test_never_brings_back_a_wine_stored_before_versioning_deleted_during_an_update(service, table, monkeypatch):
+    wine = service.create_wine(USER, name="Ridge")
+    table.update_item(Key={"pk": f"USER#{USER}", "sk": f"WINE#{wine.wine_id}"}, UpdateExpression="REMOVE version")
+    race(monkeypatch, lambda: service.delete_wine(USER, wine.wine_id))
+    with pytest.raises(WineNotFoundError):
+        service.update_wine(USER, wine.wine_id, notes="Loved it")
+    assert service.list_wines(USER) == ([], None)
+
+
+def test_never_gives_the_agent_a_raw_error_when_a_wine_stays_busy(call, monkeypatch):  # noqa: F811
+    wine_id = _ok(call, "create_wine", {"name": "Ridge"})["wine"]["wine_id"]
+
+    def always_conflicts(self, wine, *, new=False):
+        raise WriteConflictError("another write got there first")
+
+    monkeypatch.setattr(WineRepository, "put", always_conflicts)
+    status, body = call(_tool("update_wine", {"wine_id": wine_id, "notes": "Loved it"}))
+    assert (status, body["result"]["isError"]) == (200, True)
+    assert "try again" in body["result"]["content"][0]["text"]
+
+
 # Photos
 
 
@@ -152,12 +174,32 @@ def test_never_keeps_a_photo_whose_file_was_replaced_with_a_non_image(service, s
 
 def test_never_saves_a_photo_it_cannot_search_with(service, s3, bedrock, photo_vectors):
     wine = service.create_wine(USER, name="Ridge")
-    bedrock.reject_images = True  # e.g. a JPEG header followed by garbage
+    bedrock.image_error = "ValidationException"  # Bedrock can't read it, e.g. a JPEG header followed by garbage
     key = uploaded(service, s3, wine.wine_id)
     service.photo_uploaded(key)
     assert service.get_wine(USER, wine.wine_id).photo_keys == []
     assert photo_vectors.vectors == {}
     assert s3.list_objects_v2(Bucket=BUCKET).get("KeyCount") == 0
+
+
+def test_never_drops_a_photo_because_bedrock_was_busy(service, s3, bedrock):
+    wine = service.create_wine(USER, name="Ridge")
+    key = uploaded(service, s3, wine.wine_id)
+    bedrock.image_error = "ThrottlingException"
+    with pytest.raises(ClientError):  # raised, so S3 runs the event again
+        service.photo_uploaded(key)
+    bedrock.image_error = None
+    service.photo_uploaded(key)
+    assert service.get_wine(USER, wine.wine_id).photo_keys == [key]
+
+
+def test_never_fails_on_an_upload_event_for_a_photo_already_deleted(service, s3, photo_vectors):
+    wine = service.create_wine(USER, name="Ridge")
+    key = add_photo(service, s3, wine.wine_id)
+    service.delete_photo(USER, wine.wine_id, photo_id_of(key))
+    service.photo_uploaded(key)  # S3 delivers events at least once, so it can come again
+    assert service.get_wine(USER, wine.wine_id).photo_keys == []
+    assert photo_vectors.vectors == {}
 
 
 def test_never_accepts_unlimited_photos_on_one_wine(service, s3):

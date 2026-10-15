@@ -68,6 +68,17 @@ def wine_photo_owner(key: str) -> tuple[str, str] | None:
     return parts[0], parts[1]
 
 
+def _is_search_ref(photo_ref: str, user_id: str) -> bool:
+    """Whether a photo_ref is exactly one of this user's search photo keys, `search/<user_id>/<ulid>`."""
+    prefix, _, photo_id = photo_ref.rpartition("/")
+    if prefix != f"{SEARCH_PREFIX}{user_id}":
+        return False
+    try:
+        return str(ULID.from_str(photo_id)) == photo_id
+    except ValueError:
+        return False
+
+
 def uploaded_keys(event: dict[str, Any]) -> list[str]:
     """The object keys in an S3 upload event. S3 URL-encodes them, with spaces as '+'."""
     return [unquote_plus(record["s3"]["object"]["key"]) for record in event.get("Records", [])]
@@ -109,20 +120,27 @@ class PhotoStore:
             "No photo has been uploaded for this photo_ref: the upload failed, hasn't finished, expired, or was "
             "already used for a search. Call upload_search_photo and upload again."
         )
-        if not photo_ref.startswith(f"{SEARCH_PREFIX}{user_id}/"):
+        if not _is_search_ref(photo_ref, user_id):
             raise missing
         try:
             return self.get(photo_ref)
-        except ClientError as e:
-            if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
-                raise missing from e
-            raise
+        except FileNotFoundError as e:
+            raise missing from e
 
     def get(self, key: str) -> Photo:
-        """A stored photo, checked for size, format, and that its bytes are the image type it was uploaded as."""
-        head = self._s3.head_object(Bucket=self._bucket, Key=key)
-        _check_size(head["ContentLength"])
-        photo = sniff(self._s3.get_object(Bucket=self._bucket, Key=key)["Body"].read())
+        """A stored photo, checked for size, format, and that its bytes are the image type it was uploaded as.
+
+        FileNotFoundError if there is no photo at `key`.
+        """
+        try:
+            head = self._s3.head_object(Bucket=self._bucket, Key=key)
+            _check_size(head["ContentLength"])
+            body = self._s3.get_object(Bucket=self._bucket, Key=key)["Body"].read()
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+                raise FileNotFoundError(key) from e
+            raise
+        photo = sniff(body)
         declared, actual = head.get("ContentType", ""), f"image/{photo.format}"
         if declared != actual:
             raise InvalidPhotoError(
