@@ -1,6 +1,9 @@
 # Wine Cellar MCP: a wine memory for your AI agent
 
-![You ask your AI agent about wines; it saves them to your wine cellar and searches it by words or by label photo](docs/images/how-it-works.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/how-it-works-dark.png">
+  <img alt="How it works: you ask your agent (OpenClaw, Claude or another) about a wine; it calls the Wine Cellar MCP server on AWS to save or search your wines by words or label photo" src="docs/images/how-it-works-light.png">
+</picture>
 
 An MCP server that lets an AI agent remember which wines you like. Tell your
 agent about a wine, or send it a photo of the label, and it records the wine
